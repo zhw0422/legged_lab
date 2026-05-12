@@ -150,7 +150,7 @@ flowchart LR
 
 ## 4. 阶段一：BVH 文件解析
 
-**代码位置**：[lafan1.py](../general_motion_retargeting/utils/lafan1.py)
+**代码位置**：[lafan1.py](../general_motion_retargeting/utils/lafan1.py) 第 8-47 行
 
 ### 4.1 流程图
 
@@ -186,6 +186,8 @@ flowchart TD
 ```
 
 ### 4.2 关键代码逐行解析
+
+**代码位置**：`lafan1.py` 第 8-47 行
 
 ```python
 # lafan1.py
@@ -288,6 +290,8 @@ flowchart TD
 
 ### 5.2 `__init__` 逐行解析
 
+**代码位置**：`motion_retarget.py` 第 13-105 行
+
 ```python
 def __init__(self, src_human, tgt_robot,
              actual_human_height=None,
@@ -367,6 +371,8 @@ def __init__(self, src_human, tgt_robot,
 
 ### 5.3 `setup_retarget_configuration()` — 建立 IK 任务
 
+**代码位置**：`motion_retarget.py` 第 107-147 行
+
 ```python
 def setup_retarget_configuration(self):
     # mink.Configuration 是 IK 的"机器人当前状态"容器
@@ -409,7 +415,7 @@ def setup_retarget_configuration(self):
 
 ## 6. 阶段三：人体数据预处理
 
-**代码位置**：`motion_retarget.py` 第 150-313 行
+**代码位置**：`motion_retarget.py` 第 150-313 行（含 `update_targets`、`scale_human_data`、`offset_human_data`、`apply_ground_offset` 等）
 
 ### 6.1 预处理流程图
 
@@ -438,6 +444,8 @@ flowchart TD
 ```
 
 ### 6.2 `update_targets()` 逐行解析
+
+**代码位置**：`motion_retarget.py` 第 150-170 行
 
 ```python
 def update_targets(self, human_data, offset_to_ground=False):
@@ -485,6 +493,8 @@ def update_targets(self, human_data, offset_to_ground=False):
 
 ### 6.3 `scale_human_data()` 的数学含义
 
+**代码位置**：`motion_retarget.py` 第 243-266 行
+
 ```python
 def scale_human_data(self, human_data, human_root_name, human_scale_table):
     root_pos, root_quat = human_data[human_root_name]
@@ -522,6 +532,8 @@ def scale_human_data(self, human_data, human_root_name, human_scale_table):
 
 ### 6.4 `offset_human_data()` 的数学含义
 
+**代码位置**：`motion_retarget.py` 第 268-284 行
+
 ```python
 def offset_human_data(self, human_data, pos_offsets, rot_offsets):
     offset_human_data = {}
@@ -557,7 +569,7 @@ def offset_human_data(self, human_data, pos_offsets, rot_offsets):
 
 ## 7. 阶段四：两阶段 IK 求解
 
-**代码位置**：`motion_retarget.py` 第 173-234 行
+**代码位置**：`motion_retarget.py` 第 173-234 行（`retarget`、`error1`、`error2`）
 
 ### 7.1 IK 求解流程图
 
@@ -606,6 +618,8 @@ flowchart TD
 ```
 
 ### 7.2 `retarget()` 逐行解析
+
+**代码位置**：`motion_retarget.py` 第 173-219 行
 
 ```python
 def retarget(self, human_data, offset_to_ground=False):
@@ -724,6 +738,8 @@ $$q \leftarrow q \oplus \dot{q} \Delta t$$
 
 ### 7.5 误差计算
 
+**代码位置**：`motion_retarget.py` 第 222-234 行
+
 ```python
 def error1(self):
     return np.linalg.norm(
@@ -752,7 +768,7 @@ def error1(self):
 
 ## 8. 阶段五：可视化与保存
 
-**代码位置**：[robot_motion_viewer.py](../general_motion_retargeting/robot_motion_viewer.py)
+**代码位置**：[robot_motion_viewer.py](../general_motion_retargeting/robot_motion_viewer.py) 第 45-161 行
 
 ### 8.1 可视化流程图
 
@@ -799,6 +815,8 @@ flowchart TD
 ```
 
 ### 8.2 `RobotMotionViewer.step()` 逐行解析
+
+**代码位置**：`robot_motion_viewer.py` 第 96-154 行
 
 ```python
 def step(self, root_pos, root_rot, dof_pos,
@@ -854,7 +872,7 @@ def step(self, root_pos, root_rot, dof_pos,
 
 ### 8.3 保存为 pickle
 
-在 `bvh_to_robot.py` 第 163-182 行：
+在 `bvh_to_robot.py` 第 163-182 行（保存为 pickle）：
 
 ```python
 if args.save_path is not None:
