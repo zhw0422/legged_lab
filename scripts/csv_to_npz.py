@@ -238,6 +238,8 @@ def run_simulator(sim: sim_utils.SimulationContext, scene: InteractiveScene):
     # ------- data logger -------------------------------------------------------
     log = {
         "fps": [args_cli.output_fps],
+        "joint_names": list(robot.data.joint_names),
+        "body_names": list(robot.data.body_names),
         "joint_pos": [],
         "joint_vel": [],
         "body_pos_w": [],
@@ -305,6 +307,9 @@ def run_simulator(sim: sim_utils.SimulationContext, scene: InteractiveScene):
 
             np.savez(args_cli.output_name, **log)
             print("[INFO]: Motion npz file saved to", args_cli.output_name)
+            # Exit cleanly after saving — otherwise the sim loop spins forever.
+            simulation_app.close()
+            return
 
 
 def main():

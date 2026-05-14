@@ -122,7 +122,13 @@ class ActionsCfg:
 class ObservationsCfg:
     """Observation specifications for the MDP.
 
-    Includes standard policy + critic groups, plus an AMP group for the discriminator.
+    Mirrors legged_lab's structure:
+      - policy: base_ang_vel + root_local_rot_tan_norm (6D rot, no proj_grav)
+                + velocity_commands + joint_pos (raw) + joint_vel + actions,
+                history_length=5, flatten.
+      - critic: same as policy + base_lin_vel (privileged), history_length=5.
+      - amp:    discriminator obs group — base_ang_vel + joint_pos + joint_vel,
+                history_length=10, NOT flattened (fed as [B, 10, 61] to disc).
     """
 
     @configclass
@@ -131,13 +137,13 @@ class ObservationsCfg:
 
         # observation terms (order preserved)
         base_ang_vel = ObsTerm(func=mdp.base_ang_vel, noise=Unoise(n_min=-0.2, n_max=0.2))
-        projected_gravity = ObsTerm(
-            func=mdp.projected_gravity,
+        root_local_rot_tan_norm = ObsTerm(
+            func=mdp.root_local_rot_tan_norm,
             noise=Unoise(n_min=-0.05, n_max=0.05),
         )
         velocity_commands = ObsTerm(func=mdp.generated_commands, params={"command_name": "base_velocity"})
-        joint_pos = ObsTerm(func=mdp.joint_pos_rel, noise=Unoise(n_min=-0.01, n_max=0.01))
-        joint_vel = ObsTerm(func=mdp.joint_vel_rel, noise=Unoise(n_min=-1.5, n_max=1.5))
+        joint_pos = ObsTerm(func=mdp.amp_joint_pos, noise=Unoise(n_min=-0.01, n_max=0.01))
+        joint_vel = ObsTerm(func=mdp.joint_vel, noise=Unoise(n_min=-1.5, n_max=1.5))
         actions = ObsTerm(func=mdp.last_action)
 
         def __post_init__(self):
@@ -150,14 +156,14 @@ class ObservationsCfg:
 
     @configclass
     class CriticCfg(ObsGroup):
-        """Observations for critic group."""
+        """Observations for critic group (privileged)."""
         # observation terms (order preserved)
         base_lin_vel = ObsTerm(func=mdp.base_lin_vel)
         base_ang_vel = ObsTerm(func=mdp.base_ang_vel)
-        projected_gravity = ObsTerm(func=mdp.projected_gravity)
+        root_local_rot_tan_norm = ObsTerm(func=mdp.root_local_rot_tan_norm)
         velocity_commands = ObsTerm(func=mdp.generated_commands, params={"command_name": "base_velocity"})
-        joint_pos = ObsTerm(func=mdp.joint_pos_rel)
-        joint_vel = ObsTerm(func=mdp.joint_vel_rel)
+        joint_pos = ObsTerm(func=mdp.amp_joint_pos)
+        joint_vel = ObsTerm(func=mdp.joint_vel)
         actions = ObsTerm(func=mdp.last_action)
         height_scan = ObsTerm(
             func=mdp.height_scan,
@@ -175,34 +181,32 @@ class ObservationsCfg:
 
     @configclass
     class AMPCfg(ObsGroup):
-        """Observations for AMP discriminator.
+        """Discriminator observations.
 
-        Contains motion-related features only (no commands, no gravity).
-        These are the features that the discriminator uses to judge motion style.
+        Pure motion features:
+          base_ang_vel(3) + joint_pos(num_dof) + joint_vel(num_dof)
+
+        history_length=10 with flatten — for AMP-PPO we still use a flat
+        (B, hl*dim) tensor through the existing pair-based discriminator.
+        Longer window (10 frames ≈ 0.33s at 30Hz, ≈ half stride) lets the
+        discriminator see gait rhythm rather than instantaneous values, which
+        is the key fix for disc-saturation per legged_lab's design.
         """
+        base_ang_vel = ObsTerm(
+            func=mdp.amp_base_ang_vel,
+            params={"asset_cfg": SceneEntityCfg("robot")},
+        )
         joint_pos = ObsTerm(
-            func=mdp.amp_joint_pos_rel,
+            func=mdp.amp_joint_pos,
             params={"asset_cfg": SceneEntityCfg("robot")},
         )
         joint_vel = ObsTerm(
             func=mdp.amp_joint_vel,
             params={"asset_cfg": SceneEntityCfg("robot")},
         )
-        base_lin_vel = ObsTerm(
-            func=mdp.amp_base_lin_vel,
-            params={"asset_cfg": SceneEntityCfg("robot")},
-        )
-        base_ang_vel = ObsTerm(
-            func=mdp.amp_base_ang_vel,
-            params={"asset_cfg": SceneEntityCfg("robot")},
-        )
-        foot_positions = ObsTerm(
-            func=mdp.amp_foot_positions_base,
-            params={"asset_cfg": SceneEntityCfg("robot", body_names=".*_foot")},
-        )
 
         def __post_init__(self):
-            self.history_length = 2
+            self.history_length = 10
             self.enable_corruption = False
             self.concatenate_terms = True
 

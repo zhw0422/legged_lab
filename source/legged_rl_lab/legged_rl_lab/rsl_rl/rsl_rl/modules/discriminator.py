@@ -1,11 +1,14 @@
-# Copyright (c) 2024-2025 zihan wang
-# SPDX-License-Identifier: Apache-2.0
-
 """AMP Discriminator network.
 
 Distinguishes between expert (reference motion) and policy-generated transitions.
 Input: concatenation of (state, next_state) AMP observation pairs.
-Output: single logit score.
+Output: single raw logit (no squashing).
+
+Design follows the reference implementation from TienKung-Lab / legged_lab:
+- Pure LSGAN loss: MSE(D(expert), +1) + MSE(D(policy), -1)
+- R1 gradient penalty on expert (λ=10)
+- No tanh squashing, no logit regularization
+- External (numpy running) normalizer, updated from both policy + expert
 """
 
 from __future__ import annotations
@@ -22,21 +25,17 @@ class AMPDiscriminator(nn.Module):
     """Discriminator for Adversarial Motion Priors (AMP).
 
     Takes concatenated (current_amp_obs, next_amp_obs) as input and outputs
-    a logit indicating whether the transition is from the expert dataset.
-
-    Supports:
-    - BCEWithLogits loss with R1 gradient penalty
-    - Optional empirical normalization of AMP observations
+    a raw logit indicating whether the transition is from the expert dataset.
     """
 
     def __init__(
         self,
         amp_obs_dim: int,
-        hidden_dims: list[int] | tuple[int, ...] = (1024, 512),
+        hidden_dims: list[int] | tuple[int, ...] = (1024, 512, 256),
         activation: str = "relu",
-        reward_scale: float = 1.0,
-        gradient_penalty_coef: float = 5.0,
-        logit_reg_coef: float = 0.05,
+        reward_scale: float = 0.3,
+        gradient_penalty_coef: float = 10.0,
+        logit_reg_coef: float = 0.0,  # kept for API compat; TienKung uses 0
         weight_decay: float = 1e-4,
         obs_normalization: bool = True,
     ) -> None:
@@ -66,25 +65,22 @@ class AMPDiscriminator(nn.Module):
             self.obs_normalizer = None
 
     def forward(self, amp_obs_pair: torch.Tensor) -> torch.Tensor:
-        """Forward pass.
+        """Forward pass → raw logit.
 
         Args:
             amp_obs_pair: Concatenated (state, next_state) of shape ``(B, input_dim)``.
 
         Returns:
-            Logit of shape ``(B, 1)``.
+            Raw logit of shape ``(B, 1)``.
         """
         if self.obs_normalizer is not None:
-            # Normalize each half independently.
-            # Validate input dimension before splitting to give a clear error.
             pair_dim = amp_obs_pair.shape[-1]
             if pair_dim != self.input_dim:
                 raise ValueError(
                     f"AMPDiscriminator.forward: expected input dim {self.input_dim} "
                     f"(= 2 × amp_obs_dim {self.amp_obs_dim}), but got {pair_dim}. "
                     f"Check that env amp obs dim ({pair_dim // 2} per step) matches "
-                    f"motion_loader obs dim ({self.amp_obs_dim // 2} per frame). "
-                    f"Ensure foot_positions is consistently enabled/disabled in both."
+                    f"motion_loader obs dim ({self.amp_obs_dim // 2} per frame)."
                 )
             s, s_next = amp_obs_pair.chunk(2, dim=-1)
             s = self.obs_normalizer(s)
@@ -95,28 +91,24 @@ class AMPDiscriminator(nn.Module):
         return self.head(features)
 
     def predict_reward(self, amp_obs: torch.Tensor, amp_obs_next: torch.Tensor) -> torch.Tensor:
-        """Compute style reward from a transition pair (LSGAN formulation).
+        """Style reward computed from raw logit (TienKung-style).
 
-        LSGAN reward: r = max(0, 1 - 0.25*(D(s,s') - 1)^2)
-        where D = tanh(logit) ∈ (-1, 1).
-        - When D=+1 (expert-like): r = reward_scale × 1.0  (maximum)
-        - When D= 0 (boundary):   r = reward_scale × 0.75
-        - When D=-1 (policy-like): r = reward_scale × 0.0  (minimum)
+        r = reward_scale × clamp(1 - 0.25 * (D - 1)^2, min=0)
 
-        The bounded output prevents reward divergence that occurs with
-        softplus(logit) as the discriminator becomes more confident.
+        At D = +1 (expert-like):   r = reward_scale × 1.0  (maximum)
+        At D =  0 (boundary):      r = reward_scale × 0.75
+        At D = -1 (policy-like):   r = reward_scale × 0.0  (minimum)
+        At |D - 1| ≥ 2 (very far): r = 0
 
-        Args:
-            amp_obs: Current AMP observation ``(B, amp_obs_dim)``.
-            amp_obs_next: Next AMP observation ``(B, amp_obs_dim)``.
-
-        Returns:
-            Style reward ``(B, 1)``.
+        Note: no tanh — the raw D is already bounded in practice by the grad
+        penalty and LSGAN targets at ±1.  This matches Peng et al. 2021 and
+        gives the disc room to learn meaningful score gradients instead of
+        saturating against a tanh asymptote.
         """
         with torch.no_grad():
             pair = torch.cat([amp_obs, amp_obs_next], dim=-1)
-            d_tanh = torch.tanh(self.forward(pair))  # (B,1) in (-1, 1)
-            reward = self.reward_scale * torch.clamp(1.0 - 0.25 * (d_tanh - 1.0) ** 2, min=0.0)
+            d = self.forward(pair)
+            reward = self.reward_scale * torch.clamp(1.0 - 0.25 * (d - 1.0) ** 2, min=0.0)
         return reward
 
     def compute_loss(
@@ -124,46 +116,42 @@ class AMPDiscriminator(nn.Module):
         policy_pair: torch.Tensor,
         expert_pair: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Compute discriminator loss with gradient penalty.
+        """LSGAN loss with R1 gradient penalty.
 
-        Args:
-            policy_pair: Policy-generated (s, s') pairs ``(B, input_dim)``.
-            expert_pair: Expert (s, s') pairs ``(B, input_dim)``.
+        Expert target = +1; policy target = -1.  Raw-logit MSE, no tanh.
 
         Returns:
-            Tuple of (amp_loss, grad_pen_loss, logit_reg_loss).
+            (amp_loss, grad_pen_loss, logit_reg_loss)
         """
-        # Forward pass on both
         all_pairs = torch.cat([policy_pair, expert_pair], dim=0)
         all_logits = self.forward(all_pairs)
         policy_logits, expert_logits = all_logits.split(policy_pair.shape[0], dim=0)
 
-        # LSGAN loss: expert → 1, policy → -1  (outputs in raw logit space)
-        # E[(D(expert) - 1)^2] + E[(D(policy) + 1)^2]  using tanh squashing
-        # Equivalent formulation via logits: MSE against ±1 targets on tanh(logit)
-        policy_out = torch.tanh(policy_logits)   # mapped to (-1, 1)
-        expert_out = torch.tanh(expert_logits)   # mapped to (-1, 1)
-        amp_loss = 0.5 * (
-            torch.mean((expert_out - 1.0) ** 2)
-            + torch.mean((policy_out + 1.0) ** 2)
+        expert_loss = torch.nn.functional.mse_loss(
+            expert_logits, torch.ones_like(expert_logits)
         )
+        policy_loss = torch.nn.functional.mse_loss(
+            policy_logits, -torch.ones_like(policy_logits)
+        )
+        amp_loss = 0.5 * (expert_loss + policy_loss)
 
-        # R1 gradient penalty on expert data
+        # R1 gradient penalty on expert data (λ * ||grad||^2)
         grad_pen_loss = self._compute_gradient_penalty(expert_pair)
 
-        # Logit regularization
-        logit_reg_loss = self.logit_reg_coef * torch.mean(expert_logits**2 + policy_logits**2)
+        # Logit regularization — kept for API compat but disabled by default.
+        if self.logit_reg_coef > 0.0:
+            logit_reg_loss = self.logit_reg_coef * torch.mean(
+                expert_logits**2 + policy_logits**2
+            )
+        else:
+            logit_reg_loss = torch.zeros((), device=amp_loss.device)
 
         return amp_loss, grad_pen_loss, logit_reg_loss
 
     def _compute_gradient_penalty(self, expert_pair: torch.Tensor) -> torch.Tensor:
-        """R1 gradient penalty on expert data.
-
-        Computes: lambda/2 * E[||grad D(x_expert)||^2]
-        """
+        """R1 grad penalty: λ * E[||grad_x D(x)||^2] on expert data."""
         expert_pair = expert_pair.detach().requires_grad_(True)
 
-        # Normalize if needed
         if self.obs_normalizer is not None:
             s, s_next = expert_pair.chunk(2, dim=-1)
             s_norm = self.obs_normalizer(s)
@@ -183,7 +171,8 @@ class AMPDiscriminator(nn.Module):
             retain_graph=True,
         )[0]
 
-        grad_penalty = 0.5 * self.gradient_penalty_coef * torch.mean(grad.pow(2))
+        # TienKung form: λ * mean(||grad||^2)
+        grad_penalty = self.gradient_penalty_coef * grad.pow(2).sum(dim=1).mean()
         return grad_penalty
 
     def update_normalizer(self, amp_obs: torch.Tensor) -> None:

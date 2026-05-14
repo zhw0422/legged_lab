@@ -22,10 +22,14 @@ class UnitreeG1AMPFlatPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     experiment_name = "unitree_g1_amp_flat"
 
     policy = RslRlPpoActorCriticCfg(
+        # TienKung uses scalar init_std=1.0 — gives broad exploration across
+        # all joints.  Our earlier log-std with init=0.3 was too restrictive
+        # and combined with low entropy made the policy collapse locally.
         noise_std_type="scalar",
         init_noise_std=1.0,
-        actor_obs_normalization=False,
-        critic_obs_normalization=False,
+        # Running mean/var for policy / critic obs — stabilises value training.
+        actor_obs_normalization=True,
+        critic_obs_normalization=True,
         actor_hidden_dims=[512, 256, 128],
         critic_hidden_dims=[512, 256, 128],
         activation="elu",
@@ -36,7 +40,9 @@ class UnitreeG1AMPFlatPPORunnerCfg(RslRlOnPolicyRunnerCfg):
         value_loss_coef=1.0,
         use_clipped_value_loss=True,
         clip_param=0.2,
-        entropy_coef=0.002,  # 0.008→0.002: 减弱熵正则，防止action std无界增长
+        # TienKung uses 0.005 — enough to keep exploration alive, not so much
+        # that action_std explodes.
+        entropy_coef=0.005,
         num_learning_epochs=5,
         num_mini_batches=4,
         learning_rate=1.0e-3,
@@ -46,30 +52,32 @@ class UnitreeG1AMPFlatPPORunnerCfg(RslRlOnPolicyRunnerCfg):
         desired_kl=0.01,
         max_grad_norm=1.0,
         amp_cfg={
-            # 缩小判别器容量：[1024, 512] → [512, 256]
-            # 过大的判别器配合归一化泄漏问题会轻松达到完美区分（disc_acc≈1.0）
-            # 缩小容量使其更难记忆简单特征，迫使它关注真正的步态差异
-            "amp_discriminator_hidden_dims": [512, 256],
+            # TienKung-sized discriminator [1024, 512, 256] — big enough to
+            # learn meaningful style differences, combined with:
+            #   • no tanh on logits (raw D for LSGAN MSE)
+            #   • no logit regularization
+            #   • R1 grad penalty λ=10
+            # This combo keeps the disc usefully bounded without saturating.
+            "amp_discriminator_hidden_dims": [1024, 512, 256],
             "amp_discriminator_activation": "relu",
-            # 减慢判别器学习，给 policy 更多赶上的机会
-            "amp_learning_rate": 1e-5,
+            # Match AC learning rate — discriminator updated alongside policy
+            # in the same optimizer (weight decay differs per param group).
+            "amp_learning_rate": 1e-3,
             "amp_replay_buffer_size": 1000000,
-            # 50% 任务 / 50% 风格：平衡任务与风格梯度
-            # 问题背景：disc_acc≈1.0时style_reward是常数（softplus(-0.75)≈1.16/step），
-            #   所有 transition 获得相同 style reward → advantage from style ≡ 0。
-            #   lerp=0.25时有效梯度只有25%task，太弱；改为0.5使task梯度翻倍，
-            #   先让策略学会走路（policy分布向expert靠近），disc_acc才能开始下降。
-            "amp_task_reward_lerp": 0.5,
-            # gradient penalty 保持标准值
-            "amp_disc_gradient_penalty_coef": 5.0,
-            # logit_reg 取中间值 0.2：
-            # - 0.3 时 logit≈±0.5，softplus 梯度 sigmoid(-0.5)=0.38 ✓ 但梯度稍弱
-            # - 0.1 时 logit≈±1.1，softplus 梯度 sigmoid(-1.1)=0.25 ✗ 反而更弱
-            # - 0.2 时 logit≈±0.75，softplus 梯度 sigmoid(-0.75)=0.32，平衡点
-            "amp_disc_logit_reg_coef": 0.2,
+            # 30% of blended reward is task; 70% is style (TienKung default).
+            # With style reward ∈ [0, reward_coef], bounded and dense, the
+            # disc no longer has to carry all the signal alone.
+            "amp_task_reward_lerp": 0.3,
+            # R1 grad penalty λ (TienKung uses 10).
+            "amp_disc_gradient_penalty_coef": 10.0,
+            # Disable logit reg — TienKung uses 0.  Regularization belongs in
+            # the gradient penalty, not in squashing logits toward 0 (which
+            # flattens the reward surface).
+            "amp_disc_logit_reg_coef": 0.0,
             "amp_disc_weight_decay": 0.0005,
-            # reward_scale 降至2.0：scale=3.0时常量style项(≈3×0.387=1.16/step)过大，
-            #   淹没task差分信号，value网络偏向拟合style常量而非task结构。
-            "amp_reward_scale": 2.0,
+            # Reward scale (TienKung "amp_reward_coef" = 0.3).  Dense per-step
+            # bonus ≤0.3, well below task reward magnitude so task gradient
+            # stays dominant while style nudges gait quality.
+            "amp_reward_scale": 0.3,
         },
     )

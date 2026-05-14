@@ -49,7 +49,11 @@ logger = logging.getLogger(__name__)
 _ROBOT_PROFILES: dict[str, dict] = {
     "g1": {
         "num_dof": 29,
-        "foot_body_indices": [],  # Disabled: CSV/NPZ must output same dim (64d). Enable only when all data sources include body positions.
+        # Substring patterns matched against ``body_names`` loaded from the NPZ
+        # to resolve foot body indices at runtime.  Order = [left, right].
+        "foot_body_names": ("left_ankle_roll_link", "right_ankle_roll_link"),
+        # Fallback indices if NPZ has no body_names (e.g. old files).
+        "foot_body_indices": [],
         # G1 29-DOF default standing posture (matches UNITREE_G1_29DOF_CFG BFS order)
         "default_joint_pos": np.array([
             -0.1,  # [0] left_hip_pitch_joint
@@ -304,67 +308,109 @@ class MotionLoader:
         return tensor
 
     def _load_npz(self, path: str) -> torch.Tensor:
-        """Load AMASS-retargeted .npz and convert to flat AMP feature vectors.
+        """Load a retargeted motion ``.npz`` and convert to flat AMP feature vectors.
 
-        Expected keys: ``dof_positions``, ``dof_velocities``,
-        ``body_positions``, ``body_rotations``,
-        ``body_linear_velocities``, ``body_angular_velocities``.
+        Two schemas are auto-detected from the key set:
 
-        Quaternion convention in the file: ``[w, x, y, z]``.
+        1. **AMASS-retargeted** (keys ``dof_positions``, ``dof_velocities``,
+           ``body_positions``, ``body_rotations``, ``body_linear_velocities``,
+           ``body_angular_velocities``).  DOFs are in MuJoCo/AMASS order and
+           will be reordered to IsaacLab BFS via ``joint_reorder_map``.
+           Quaternion convention: ``[w, x, y, z]``.
+        2. **IsaacLab-replayed** (keys ``joint_pos``, ``joint_vel``,
+           ``body_pos_w``, ``body_quat_w``, ``body_lin_vel_w``,
+           ``body_ang_vel_w``, scalar ``fps``).  Produced by
+           ``scripts/csv_to_npz.py`` which kinematically replays a CSV through
+           IsaacSim — the velocities come from PhysX rather than finite
+           difference, matching the distribution the policy sees at training
+           time.  DOFs are already in BFS order (no reorder applied).
 
-        **Joint reordering**: AMASS data uses MuJoCo joint order, but IsaacLab
-        uses BFS traversal order. This method automatically reorders joints
-        if a ``joint_reorder_map`` is defined in the robot profile.
+        AMP feature layout::
 
-        AMP feature layout:
           joint_pos_rel(num_dof) | joint_vel(num_dof) |
           base_lin_vel_b(3) | base_ang_vel_b(3) | foot_pos_b(num_feet*3)
         """
         d = np.load(path, allow_pickle=True)
-        dof_pos = d["dof_positions"].astype(np.float32)    # (N, J) [MuJoCo order]
-        dof_vel = d["dof_velocities"].astype(np.float32)   # (N, J) [MuJoCo order]
-        body_pos = d["body_positions"].astype(np.float32)  # (N, B, 3)
-        body_rot = d["body_rotations"].astype(np.float32)  # (N, B, 4) [w,x,y,z]
-        body_lin = d["body_linear_velocities"].astype(np.float32)  # (N, B, 3)
-        body_ang = d["body_angular_velocities"].astype(np.float32)  # (N, B, 3)
+        keys = set(d.files)
+
+        if {"joint_pos", "joint_vel", "body_pos_w", "body_quat_w"}.issubset(keys):
+            # IsaacLab-replayed schema — already in BFS order, PhysX velocities.
+            dof_pos = d["joint_pos"].astype(np.float32)       # (N, J)
+            dof_vel = d["joint_vel"].astype(np.float32)       # (N, J)
+            body_pos = d["body_pos_w"].astype(np.float32)     # (N, B, 3)
+            body_rot = d["body_quat_w"].astype(np.float32)    # (N, B, 4) [w,x,y,z]
+            body_lin = d["body_lin_vel_w"].astype(np.float32) # (N, B, 3)
+            body_ang = d["body_ang_vel_w"].astype(np.float32) # (N, B, 3)
+            already_bfs = True
+
+            # Resolve foot body indices from body_names (if present).
+            # TienKung-style AMP features require foot positions in base frame,
+            # not base linear/angular velocity, to avoid the PhysX-vs-mocap
+            # distribution mismatch that saturates the discriminator.
+            if "body_names" in keys:
+                body_names = [
+                    s.decode("utf-8") if isinstance(s, bytes) else str(s)
+                    for s in d["body_names"]
+                ]
+                foot_patterns = self._profile.get("foot_body_names", ())
+                foot_body_indices = []
+                for pat in foot_patterns:
+                    for i, name in enumerate(body_names):
+                        if pat in name:  # substring match
+                            foot_body_indices.append(i)
+                            break
+                # Runtime-resolved foot indices win over the hardcoded profile.
+                self._runtime_foot_body_indices = foot_body_indices
+                logger.info(
+                    f"[MotionLoader] Resolved foot body indices from NPZ: "
+                    f"{foot_body_indices} (from names {foot_patterns})"
+                )
+            else:
+                self._runtime_foot_body_indices = None
+        else:
+            # AMASS schema
+            dof_pos = d["dof_positions"].astype(np.float32)
+            dof_vel = d["dof_velocities"].astype(np.float32)
+            body_pos = d["body_positions"].astype(np.float32)
+            body_rot = d["body_rotations"].astype(np.float32)
+            body_lin = d["body_linear_velocities"].astype(np.float32)
+            body_ang = d["body_angular_velocities"].astype(np.float32)
+            already_bfs = False
 
         N = dof_pos.shape[0]
 
-        # Reorder joints from MuJoCo/AMASS order to IsaacLab BFS order
-        reorder_map = self._profile.get("joint_reorder_map", None)
-        if reorder_map is not None:
-            dof_pos = dof_pos[:, reorder_map]  # (N, J) reordered
-            dof_vel = dof_vel[:, reorder_map]  # (N, J) reordered
-            logger.debug(f"Reordered joints from MuJoCo to IsaacLab BFS order (map: {reorder_map.tolist()})")
+        # Reorder joints only when source is in MuJoCo/AMASS order.
+        if not already_bfs:
+            reorder_map = self._profile.get("joint_reorder_map", None)
+            if reorder_map is not None:
+                dof_pos = dof_pos[:, reorder_map]
+                dof_vel = dof_vel[:, reorder_map]
+                logger.debug(f"Reordered joints from MuJoCo to IsaacLab BFS order")
 
-        # 1. joint_pos_rel
-        if self._default_jpos is not None:
-            jpos_rel = dof_pos - self._default_jpos[None, :]
-        else:
-            jpos_rel = dof_pos
+        # 1. joint_pos (RAW — not relative to default).
+        #    legged_lab uses raw joint_pos in all obs groups (policy, critic,
+        #    disc, disc_demo); the policy learns the absolute gait trajectory
+        #    rather than a delta.  This also simplifies disc feature matching:
+        #    env's ``joint_pos`` = motion data's ``dof_pos`` directly, no
+        #    alignment with default_joint_pos needed.
+        jpos = dof_pos
 
-        # 2. joint_vel
+        # 2. joint_vel (finite-diff at motion fps, matches env at same fps)
         jvel = dof_vel
 
-        # 3. base linear / angular velocity in base frame
-        root_quat = body_rot[:, 0, :]     # (N, 4) [w,x,y,z]
-        base_lin_vel = _quat_rotate_inverse_np(root_quat, body_lin[:, 0, :])
+        # 3. base angular velocity in base frame.
+        #    Feature set mirrors legged_lab's ``disc`` obs group:
+        #      base_ang_vel(3) + joint_pos(29) + joint_vel(29) = 61 per frame.
+        root_quat = body_rot[:, 0, :]  # (N, 4) [w,x,y,z]
         base_ang_vel = _quat_rotate_inverse_np(root_quat, body_ang[:, 0, :])
 
-        # 4. foot positions in base frame
-        foot_indices = self._profile.get("foot_body_indices", [])
-        root_pos = body_pos[:, 0, :]      # (N, 3)
-        foot_parts = []
-        for idx in foot_indices:
-            rel_w = body_pos[:, idx, :] - root_pos        # (N, 3) world-relative
-            foot_b = _quat_rotate_inverse_np(root_quat, rel_w)  # (N, 3) base frame
-            foot_parts.append(foot_b)
-
-        amp_obs_np = np.concatenate(
-            [jpos_rel, jvel, base_lin_vel, base_ang_vel] + foot_parts, axis=1
-        )
+        feature_blocks = [base_ang_vel, jpos, jvel]
+        amp_obs_np = np.concatenate(feature_blocks, axis=1)
         tensor = torch.from_numpy(amp_obs_np).to(self.device)
         self.data = tensor
+
+        # Keep foot_body_indices resolved for RSI or auxiliary observations.
+        root_pos = body_pos[:, 0, :]
 
         # Store raw state for RSI (Reference State Initialization)
         self.state_root_pos_w = torch.from_numpy(root_pos).to(self.device)
@@ -414,32 +460,25 @@ class MotionLoader:
             joint_pos = joint_pos[:, reorder_map]
             logger.debug("CSV: Reordered joints from AMASS to IsaacLab BFS order")
 
-        # joint_pos_rel
-        if self._default_jpos is not None:
-            jpos_rel = joint_pos - self._default_jpos[None, :]
-        else:
-            jpos_rel = joint_pos
+        # joint_pos (RAW, matches env's joint_pos in base obs)
+        jpos = joint_pos
 
-        # velocities via finite difference
-        jvel = _finite_diff(joint_pos, fps)                           # (N, J)
-        root_lin_vel_w = _finite_diff(root_pos, fps)                  # (N, 3)
-        base_lin_vel = _quat_rotate_inverse_np(root_quat, root_lin_vel_w)  # (N, 3)
-        base_ang_vel = _ang_vel_from_quats(root_quat, fps)            # (N, 3) body frame
+        # velocities via finite difference at native CSV fps
+        jvel = _finite_diff(joint_pos, fps)                          # (N, J)
+        # Base angular velocity in body frame (from quat finite-diff)
+        base_ang_vel = _ang_vel_from_quats(root_quat, fps)            # (N, 3)
 
-        # foot positions: NOT included for CSV format.
-        # CSV only has joint angles + root pose, no body positions (no FK data).
-        # Including zeros would give the discriminator a trivial shortcut to
-        # distinguish expert (zeros) from policy (real foot coords) → disc_acc=1.0
-        # from iteration 1 → style reward collapses to 0.
-        # When using CSV data, also set observations.amp.foot_positions = None
-        # in the environment config to keep reference-data and env-obs consistent.
-        amp_obs_np = np.concatenate(
-            [jpos_rel, jvel, base_lin_vel, base_ang_vel], axis=1
-        )
+        # Feature layout matches legged_lab disc obs:
+        #   base_ang_vel(3) + joint_pos(num_dof) + joint_vel(num_dof)
+        amp_obs_np = np.concatenate([base_ang_vel, jpos, jvel], axis=1)
         tensor = torch.from_numpy(amp_obs_np).to(self.device)
         self.data = tensor
 
-        # Store raw state for RSI (Reference State Initialization)
+        # Below we still store raw state vectors for RSI, but base velocities
+        # are kept out of AMP features above — this only affects RSI init.
+        root_lin_vel_w = _finite_diff(root_pos, fps)  # (N, 3) world frame
+        base_ang_vel = _ang_vel_from_quats(root_quat, fps)  # body frame
+
         # base_ang_vel is body-frame → rotate to world-frame for write_root_velocity_to_sim
         ang_vel_w_np = _quat_rotate_np(root_quat, base_ang_vel)
         self.state_root_pos_w = torch.from_numpy(root_pos).to(self.device)

@@ -384,14 +384,15 @@ class AMPPPO(PPO):
                     expert_obs_hist = self.reference_data[exp_idx]
                 self.discriminator.update_normalizer(expert_obs_hist)
 
-            # Compute discriminator accuracy for logging
-            # Use tanh threshold (LSGAN: expert→+1, policy→-1) not sigmoid (BCE).
+            # Compute discriminator accuracy for logging.
+            # Raw-logit disc (no tanh): threshold at 0 — policy should produce
+            # negative logits, expert should produce positive logits.
             with torch.no_grad():
                 all_pairs = torch.cat([policy_pair, expert_pair], dim=0)
                 all_logits = self.discriminator(all_pairs)
                 p_logits, e_logits = all_logits.split(mini_batch_size, dim=0)
-                acc_policy = (torch.tanh(p_logits) < 0.0).float().mean().item()
-                acc_expert = (torch.tanh(e_logits) > 0.0).float().mean().item()
+                acc_policy = (p_logits < 0.0).float().mean().item()
+                acc_expert = (e_logits > 0.0).float().mean().item()
 
             # Accumulate
             mean_value_loss += value_loss.item()

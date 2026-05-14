@@ -13,12 +13,47 @@ from __future__ import annotations
 import torch
 from typing import TYPE_CHECKING
 
+import isaaclab.utils.math as math_utils
 from isaaclab.managers import SceneEntityCfg
 
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
-    
+
 from isaaclab.utils.math import quat_apply_inverse
+
+
+def root_local_rot_tan_norm(
+    env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+) -> torch.Tensor:
+    """Base rotation (yaw removed) as tan + normal vectors from rotation matrix.
+
+    Richer than ``projected_gravity`` — encodes full base pose (roll + pitch
+    combined) as a 6D vector instead of a 3D gravity projection.  Follows
+    legged_lab's observation design (see
+    ``legged_lab/tasks/locomotion/amp/mdp/observations.py``).
+    """
+    robot = env.scene[asset_cfg.name]
+    root_quat = robot.data.root_quat_w
+    yaw_quat = math_utils.yaw_quat(root_quat)
+    root_quat_local = math_utils.quat_mul(math_utils.quat_conjugate(yaw_quat), root_quat)
+    root_rotm_local = math_utils.matrix_from_quat(root_quat_local)
+    # First and last column = tangent (forward) and normal (up) axes in the
+    # yaw-removed local frame.
+    tan_vec = root_rotm_local[:, :, 0]   # (N, 3)
+    norm_vec = root_rotm_local[:, :, 2]  # (N, 3)
+    return torch.cat([tan_vec, norm_vec], dim=-1)  # (N, 6)
+
+
+def amp_joint_pos(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
+    """Raw joint positions for AMP observations (NOT relative to default).
+
+    legged_lab / TienKung-Lab both feed raw joint_pos into the discriminator.
+    The policy also learns on raw joint_pos for consistency.  Removes the
+    default_joint_pos offset that would otherwise need to be matched between
+    env and motion data.
+    """
+    asset = env.scene[asset_cfg.name]
+    return asset.data.joint_pos
 
 
 def amp_joint_pos_rel(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:

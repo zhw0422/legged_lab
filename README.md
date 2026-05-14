@@ -9,13 +9,13 @@
 
 ## 🧰️ Setup 
 
-* Use pip to install isaaclab [pip install isaaclab](https://isaac-sim.github.io/IsaacLab/main/source/setup/installation/isaaclab_pip_installation.html)
+* Use pip to install isaaclab [pip install isaaclab](https://isaac-sim.github.io/IsaacLab/v2.3.0/source/setup/installation/isaaclab_pip_installation.html)
 
 
 * Create conda environment
 ```bash
-conda create -n env_isaaclab python=3.11
-conda activate env_isaaclab
+conda create -n legged_rl_lab python=3.11
+conda activate legged_rl_lab
 pip install -U torch==2.7.0 torchvision==0.22.0 --index-url https://download.pytorch.org/whl/cu128
 pip install --upgrade pip
 ```
@@ -24,7 +24,8 @@ pip install --upgrade pip
 ```bash
 pip install isaaclab[isaacsim,all]==2.3.0 --extra-index-url https://pypi.nvidia.com
 ```
-Verify the installization
+
+* Verify the installization
 ```bash
 isaacsim
 ```
@@ -348,6 +349,8 @@ python scripts/rsl_rl/play.py \
 
 </details>
 
+## 🏃 Mimic
+
 ### Datasets
 
 Place the following datasets in the corresponding directories:
@@ -355,13 +358,7 @@ Place the following datasets in the corresponding directories:
 ```
 source/legged_rl_lab/legged_rl_lab/data/motion/
 ├── LAFAN1_Retargeting_Dataset/   # Motion capture retargeted CSV (30 FPS)
-│   ├── g1_walk/                  # 12 CSV, ~86k frames
-│   ├── g1_run/                   #  4 CSV, ~28k frames
-│   ├── g1_sprint/                #  2 CSV, ~16k frames
-│   ├── g1_dance/                 #  8 CSV, ~45k frames
-│   ├── g1_jump/                  #  3 CSV, ~22k frames
-│   ├── g1_fall/                  #  6 CSV, ~28k frames
-│   └── g1_fight/                 #  5 CSV, ~36k frames
+│   └── g1/                       # 40 CSV clips (walk, run, dance, jump, fight, fall …)
 └── AMASS_Retargeted_for_G1/      # Large-scale motion capture NPZ (25 sub-libraries, 17,714 files)
     └── g1/
         ├── CMU/
@@ -374,44 +371,45 @@ source/legged_rl_lab/legged_rl_lab/data/motion/
 
 ### AMP (Adversarial Motion Priors)
 
+Motion data can be either a single file (`.csv` / `.npz` / `.npy` / `.pt`) or a directory —
+`MotionLoader` dispatches on suffix and walks directories recursively. The default motion
+file is `LAFAN1_Retargeting_Dataset/g1/walk1_subject1.csv`. Override with `--motion_file`:
+
 ```bash
-# Train with AMASS (default)
+# Train with the default (LAFAN1 walk1_subject1.csv)
 python scripts/amp/train.py \
     --task LeggedRLLab-Isaac-AMP-Flat-Unitree-G1-v0 \
     --num_envs 4096 \
     --headless
 
-# Train with LAFAN1 walk
+# Train with a different LAFAN1 clip
 python scripts/amp/train.py \
     --task LeggedRLLab-Isaac-AMP-Flat-Unitree-G1-v0 \
-    --motion_file source/legged_rl_lab/legged_rl_lab/data/motion/LAFAN1_Retargeting_Dataset/g1_walk \
+    --motion_file source/legged_rl_lab/legged_rl_lab/data/motion/LAFAN1_Retargeting_Dataset/g1/dance1_subject1.csv \
     --num_envs 4096 --headless
 
-# Resume training
+# Train with an entire LAFAN1 category (all walk CSVs)
 python scripts/amp/train.py \
     --task LeggedRLLab-Isaac-AMP-Flat-Unitree-G1-v0 \
-    --motion_file source/legged_rl_lab/legged_rl_lab/data/motion/LAFAN1_Retargeting_Dataset/g1_walk \
-    --resume --load_run <run_folder> --checkpoint model_xxx.pt \
+    --motion_file source/legged_rl_lab/legged_rl_lab/data/motion/LAFAN1_Retargeting_Dataset/g1 \
     --num_envs 4096 --headless
 
-python -m torch.distributed.run \
-  --nproc_per_node=4 \
-  scripts/amp/train.py \
-  --task LeggedRLLab-Isaac-AMP-Flat-Unitree-G1-v0 \
-  --motion_file source/legged_rl_lab/legged_rl_lab/data/motion/LAFAN1_Retargeting_Dataset/g1_walk \
-  --num_envs 4096 --headless \
-  --distributed
+# Train with AMASS NPZ (only if AMASS_Retargeted_for_G1 dataset is downloaded)
+python scripts/amp/train.py \
+    --task LeggedRLLab-Isaac-AMP-Flat-Unitree-G1-v0 \
+    --motion_file source/legged_rl_lab/legged_rl_lab/data/motion/AMASS_Retargeted_for_G1/g1 \
+    --num_envs 4096 --headless
 ```
 
 ```bash
 #Play
 python scripts/amp/play.py \
     --task LeggedRLLab-Isaac-AMP-Flat-Unitree-G1-Play-v0 \
-    --motion_file source/legged_rl_lab/legged_rl_lab/data/motion/LAFAN1_Retargeting_Dataset/g1_walk \
+    --motion_file source/legged_rl_lab/legged_rl_lab/data/motion/LAFAN1_Retargeting_Dataset/g1/walk1_subject1.csv \
     --num_envs 32
 ```
 
-### 🏃 Motion Tracking
+### Motion Tracking
 
 [<img src="media/mimic_lafan.gif" width="300px">](gifs/walkrough.gif)
 
@@ -424,7 +422,7 @@ python scripts/amp/play.py \
 ```bash
 # Step 1 — Convert retargeted CSV to NPZ (runs FK via Isaac Sim to compute full body states)
 python scripts/csv_to_npz.py \
-  --input_file source/legged_rl_lab/legged_rl_lab/data/motion/LAFAN1_Retargeting_Dataset/g1_fall/fallAndGetUp1_subject1.csv \
+  --input_file <path/to/csv/file> \
   --input_fps 30 \
   --headless
 ```
@@ -432,20 +430,20 @@ python scripts/csv_to_npz.py \
 ```bash
 # Step 2 — (Optional) Replay NPZ in Isaac Sim to verify
 python scripts/replay_npz.py \
-    --file /path/to/npz_file
+    --file </path/to/npz/file>
 ```
 
 ```bash
 # Step 3 — Train
 python scripts/rsl_rl/train.py \
   --task Tracking-Flat-G1-v0 \
-  --motion_file /path/to/motion.npz \
+  --motion_file </path/to/npz/file> \
   --num_envs 4096 --headless
 
 # Resume
 python scripts/rsl_rl/train.py \
   --task Tracking-Flat-G1-v0 \
-  --motion_file /path/to/motion.npz \
+  --motion_file <path/to/npz/file> \
   --resume --load_run <run_folder> --checkpoint model_xxx.pt \
   --num_envs 4096 --headless
 ```
