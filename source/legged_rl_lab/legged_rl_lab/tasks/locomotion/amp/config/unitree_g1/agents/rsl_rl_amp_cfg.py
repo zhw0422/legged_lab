@@ -52,32 +52,31 @@ class UnitreeG1AMPFlatPPORunnerCfg(RslRlOnPolicyRunnerCfg):
         desired_kl=0.01,
         max_grad_norm=1.0,
         amp_cfg={
-            # TienKung-sized discriminator [1024, 512, 256] — big enough to
-            # learn meaningful style differences, combined with:
-            #   • no tanh on logits (raw D for LSGAN MSE)
-            #   • no logit regularization
-            #   • R1 grad penalty λ=10
-            # This combo keeps the disc usefully bounded without saturating.
-            "amp_discriminator_hidden_dims": [1024, 512, 256],
+            # Design-3 single-window discriminator:
+            #   per-frame = 29+29+1+6+3+3+18 = 89
+            #   history_length = 2, input dim to disc = 178
+            # Moderate hidden dims (we no longer feed redundant pair of 10-frame
+            # windows at 1220 dim, so 178 → [512, 256] is enough).
+            "amp_discriminator_hidden_dims": [512, 256],
             "amp_discriminator_activation": "relu",
-            # Match AC learning rate — discriminator updated alongside policy
-            # in the same optimizer (weight decay differs per param group).
-            "amp_learning_rate": 1e-3,
-            "amp_replay_buffer_size": 1000000,
-            # 30% of blended reward is task; 70% is style (TienKung default).
-            # With style reward ∈ [0, reward_coef], bounded and dense, the
-            # disc no longer has to carry all the signal alone.
+            # Discriminator gets its own low LR to prevent saturation — legged_lab
+            # uses 1e-4, well below policy LR of 1e-3.
+            "amp_learning_rate": 1e-4,
+            # Buffer holds single-window observations (not pairs).  100 iters
+            # worth of rollout steps — legged_lab uses disc_obs_buffer_size=100
+            # for similar effect.
+            "amp_replay_buffer_size": 200000,
+            # 30% of blended reward is task; 70% is style.  With style_reward
+            # now being ``× dt``-scaled (see discriminator.predict_reward), the
+            # per-step style magnitude is comparable to per-step task magnitude.
             "amp_task_reward_lerp": 0.3,
-            # R1 grad penalty λ (TienKung uses 10).
+            # R1 grad penalty λ = 10 (legged_lab / IsaacLab default).
             "amp_disc_gradient_penalty_coef": 10.0,
-            # Disable logit reg — TienKung uses 0.  Regularization belongs in
-            # the gradient penalty, not in squashing logits toward 0 (which
-            # flattens the reward surface).
             "amp_disc_logit_reg_coef": 0.0,
             "amp_disc_weight_decay": 0.0005,
-            # Reward scale (TienKung "amp_reward_coef" = 0.3).  Dense per-step
-            # bonus ≤0.3, well below task reward magnitude so task gradient
-            # stays dominant while style nudges gait quality.
-            "amp_reward_scale": 0.3,
+            # Style reward scale in "per-second" units.  Actual per-step style
+            # reward = scale × dt × clamp(..., 0, 1).  With dt=1/30 and scale=5,
+            # per-step style ≤ 5/30 ≈ 0.17 — comparable to per-step task ~0.5.
+            "amp_reward_scale": 5.0,
         },
     )

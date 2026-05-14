@@ -156,87 +156,64 @@ class AMPPPO(PPO):
               f"{1.0 - self.amp_task_reward_lerp:.2f}")
 
     def record_amp_obs(self, amp_obs: torch.Tensor) -> None:
-        """Record current AMP observation before env.step for later pairing.
+        """Record current AMP single-window observation for replay insertion.
 
         Args:
             amp_obs: Current AMP observation ``(num_envs, amp_obs_dim)``.
         """
         self._amp_transition_state = amp_obs.clone()
 
-    def process_amp_transition(self, next_amp_obs: torch.Tensor) -> None:
-        """Store the (prev_amp_obs, next_amp_obs) pair in the replay buffer.
+    def process_amp_transition(self, current_amp_obs: torch.Tensor) -> None:
+        """Insert the current AMP single-window obs into the replay buffer.
 
-        Args:
-            next_amp_obs: AMP observation after env.step ``(num_envs, amp_obs_dim)``.
+        Single-window approach: we store one trajectory window per env step,
+        not (s, s') pairs.  ``current_amp_obs`` is the observation BEFORE
+        env reset (passed in from the runner via ``extras["amp_obs"]``).
         """
-        if self.amp_replay_buffer is not None and self._amp_transition_state is not None:
-            self.amp_replay_buffer.insert(self._amp_transition_state, next_amp_obs)
+        if self.amp_replay_buffer is not None:
+            self.amp_replay_buffer.insert(current_amp_obs)
 
-    def compute_style_reward(self, amp_obs: torch.Tensor, next_amp_obs: torch.Tensor) -> torch.Tensor:
-        """Compute style reward from the discriminator.
+    def compute_style_reward(self, amp_obs: torch.Tensor, dt: float) -> torch.Tensor:
+        """Compute style reward from a single AMP window.
 
         Args:
-            amp_obs: Current AMP observation ``(B, amp_obs_dim)``.
-            next_amp_obs: Next AMP observation ``(B, amp_obs_dim)``.
-
+            amp_obs: AMP observation ``(B, amp_obs_dim)``.
+            dt: env step_dt for "per-second" reward scaling.
         Returns:
             Style reward ``(B, 1)``.
         """
         if self.discriminator is None:
             return torch.zeros(amp_obs.shape[0], 1, device=self.device)
-        return self.discriminator.predict_reward(amp_obs, next_amp_obs)
+        return self.discriminator.predict_reward(amp_obs, dt=dt)
 
     def blend_rewards(self, task_rewards: torch.Tensor, style_rewards: torch.Tensor) -> torch.Tensor:
-        """Blend task and style rewards.
-
-        Args:
-            task_rewards: Task reward ``(B,)`` or ``(B, 1)``.
-            style_rewards: Style reward ``(B, 1)``.
-
-        Returns:
-            Blended reward ``(B,)``.
-        """
+        """Blend task and style rewards as a convex combination."""
         task_r = task_rewards.view(-1)
         style_r = style_rewards.view(-1)
         lerp = self.amp_task_reward_lerp
         return lerp * task_r + (1.0 - lerp) * style_r
 
-    def _sample_expert_pairs(self, batch_size: int) -> torch.Tensor:
-        """Sample expert (s, s') pairs from reference data.
+    def _sample_expert_obs(self, batch_size: int) -> torch.Tensor:
+        """Sample expert single-window observations from reference data.
 
-        Returns concatenated pairs ``(batch_size, 2 * amp_obs_dim)``.
+        Returns ``(batch_size, hl * obs_dim_per_frame)`` flat tensor —
+        consecutive ``hl`` frames concatenated, matching the env's flat
+        AMP observation layout.
         """
         num_frames = self.reference_data.shape[0]
         hl = self.amp_history_length
-        obs_dim_per_frame = self.reference_data.shape[1]
 
         if hl <= 1:
-            # Need consecutive pairs for (s, s')
-            indices = torch.randint(0, num_frames - 1, (batch_size,), device=self.device)
-            s = self.reference_data[indices]
-            s_next = self.reference_data[indices + 1]
-        else:
-            # Sample clips of length (history_length + 1) for constructing (s, s') with history
-            max_start = num_frames - hl
-            if max_start <= 0:
-                max_start = 1
-            start_indices = torch.randint(0, max_start, (batch_size,), device=self.device)
+            indices = torch.randint(0, num_frames, (batch_size,), device=self.device)
+            return self.reference_data[indices]
 
-            # s = concat of frames [start, ..., start + hl - 1]
-            offsets_s = torch.arange(hl, device=self.device)
-            frame_indices_s = start_indices.unsqueeze(1) + offsets_s.unsqueeze(0)
-            clips_s = self.reference_data[frame_indices_s]  # (B, hl, obs_dim)
-            s = clips_s.reshape(batch_size, -1)  # (B, hl * obs_dim)
-
-            # s_next = concat of frames [start + 1, ..., start + hl]
-            offsets_next = torch.arange(1, hl + 1, device=self.device)
-            frame_indices_next = start_indices.unsqueeze(1) + offsets_next.unsqueeze(0)
-            # Clamp to valid range
-            frame_indices_next = frame_indices_next.clamp(max=num_frames - 1)
-            clips_next = self.reference_data[frame_indices_next]
-            s_next = clips_next.reshape(batch_size, -1)
-
-        return torch.cat([s, s_next], dim=-1)
+        max_start = max(1, num_frames - hl + 1)
+        start = torch.randint(0, max_start, (batch_size,), device=self.device)
+        offsets = torch.arange(hl, device=self.device)
+        frame_idx = start.unsqueeze(1) + offsets.unsqueeze(0)
+        frame_idx = frame_idx.clamp(max=num_frames - 1)
+        clips = self.reference_data[frame_idx]                 # (B, hl, D)
+        return clips.reshape(batch_size, -1)                   # (B, hl*D)
 
     def update(self) -> dict[str, float]:
         """Run PPO + AMP discriminator update."""
@@ -317,18 +294,19 @@ class AMPPPO(PPO):
 
             ppo_loss = surrogate_loss + self.value_loss_coef * value_loss - self.entropy_coef * entropy.mean()
 
-            # ---- AMP discriminator part ----
+            # ---- AMP discriminator part (single-window) ----
             mini_batch_size = original_batch_size
-            # Get policy pairs from replay buffer
+            # Get policy single-window observations from replay buffer
             amp_policy_gen = self.amp_replay_buffer.feed_forward_generator(1, mini_batch_size)
-            policy_s, policy_s_next = next(amp_policy_gen)
-            policy_pair = torch.cat([policy_s, policy_s_next], dim=-1)
+            policy_obs_amp = next(amp_policy_gen)               # (B, amp_obs_dim)
 
-            # Get expert pairs
-            expert_pair = self._sample_expert_pairs(mini_batch_size)
+            # Get expert single-window observations
+            expert_obs_amp = self._sample_expert_obs(mini_batch_size)
 
             # Discriminator loss
-            amp_loss, grad_pen_loss, logit_reg_loss = self.discriminator.compute_loss(policy_pair, expert_pair)
+            amp_loss, grad_pen_loss, logit_reg_loss = self.discriminator.compute_loss(
+                policy_obs_amp, expert_obs_amp
+            )
 
             # Total loss
             loss = ppo_loss + amp_loss + grad_pen_loss + logit_reg_loss
@@ -388,8 +366,8 @@ class AMPPPO(PPO):
             # Raw-logit disc (no tanh): threshold at 0 — policy should produce
             # negative logits, expert should produce positive logits.
             with torch.no_grad():
-                all_pairs = torch.cat([policy_pair, expert_pair], dim=0)
-                all_logits = self.discriminator(all_pairs)
+                all_obs = torch.cat([policy_obs_amp, expert_obs_amp], dim=0)
+                all_logits = self.discriminator(all_obs)
                 p_logits, e_logits = all_logits.split(mini_batch_size, dim=0)
                 acc_policy = (p_logits < 0.0).float().mean().item()
                 acc_expert = (e_logits > 0.0).float().mean().item()

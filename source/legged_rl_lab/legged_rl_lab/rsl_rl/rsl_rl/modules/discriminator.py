@@ -1,14 +1,15 @@
-"""AMP Discriminator network.
+"""AMP Discriminator network — single-window (not pair) input.
 
-Distinguishes between expert (reference motion) and policy-generated transitions.
-Input: concatenation of (state, next_state) AMP observation pairs.
-Output: single raw logit (no squashing).
-
-Design follows the reference implementation from TienKung-Lab / legged_lab:
+Following IsaacLab G1AmpEnv / legged_lab design:
+- Disc input is a flat ``(B, hl * obs_per_frame)`` tensor (one trajectory
+  window), NOT a concatenated ``(s, s')`` pair.  This avoids the redundant
+  9-frame overlap between consecutive windows that previously kept disc_acc
+  saturated at 1.0.
 - Pure LSGAN loss: MSE(D(expert), +1) + MSE(D(policy), -1)
 - R1 gradient penalty on expert (λ=10)
 - No tanh squashing, no logit regularization
-- External (numpy running) normalizer, updated from both policy + expert
+- Reward is multiplied by ``dt`` at predict time so ``reward_scale`` has
+  units of "style reward / second".
 """
 
 from __future__ import annotations
@@ -18,36 +19,34 @@ import torch.nn as nn
 
 from .normalization import EmpiricalNormalization
 from .mlp import MLP
-from rsl_rl.utils import resolve_nn_activation
 
 
 class AMPDiscriminator(nn.Module):
     """Discriminator for Adversarial Motion Priors (AMP).
 
-    Takes concatenated (current_amp_obs, next_amp_obs) as input and outputs
-    a raw logit indicating whether the transition is from the expert dataset.
+    Forward input: a single trajectory window flattened to
+    ``(B, amp_obs_dim)`` where ``amp_obs_dim = history_length * per_frame_dim``.
     """
 
     def __init__(
         self,
         amp_obs_dim: int,
-        hidden_dims: list[int] | tuple[int, ...] = (1024, 512, 256),
+        hidden_dims: list[int] | tuple[int, ...] = (1024, 512),
         activation: str = "relu",
-        reward_scale: float = 0.3,
+        reward_scale: float = 5.0,
         gradient_penalty_coef: float = 10.0,
-        logit_reg_coef: float = 0.0,  # kept for API compat; TienKung uses 0
+        logit_reg_coef: float = 0.0,
         weight_decay: float = 1e-4,
         obs_normalization: bool = True,
     ) -> None:
         super().__init__()
         self.amp_obs_dim = amp_obs_dim
-        self.input_dim = amp_obs_dim * 2  # concatenation of (s, s')
+        self.input_dim = amp_obs_dim  # single window, no pair concat
         self.reward_scale = reward_scale
         self.gradient_penalty_coef = gradient_penalty_coef
         self.logit_reg_coef = logit_reg_coef
         self.weight_decay = weight_decay
 
-        # Trunk MLP (without final activation)
         self.trunk = MLP(
             input_dim=self.input_dim,
             output_dim=hidden_dims[-1],
@@ -55,77 +54,66 @@ class AMPDiscriminator(nn.Module):
             activation=activation,
             last_activation=activation,
         )
-        # Linear head
         self.head = nn.Linear(hidden_dims[-1], 1)
 
-        # Observation normalizer (normalizes each half independently)
         if obs_normalization:
             self.obs_normalizer = EmpiricalNormalization(amp_obs_dim)
         else:
             self.obs_normalizer = None
 
-    def forward(self, amp_obs_pair: torch.Tensor) -> torch.Tensor:
+    def forward(self, amp_obs: torch.Tensor) -> torch.Tensor:
         """Forward pass → raw logit.
 
         Args:
-            amp_obs_pair: Concatenated (state, next_state) of shape ``(B, input_dim)``.
-
+            amp_obs: ``(B, amp_obs_dim)`` flat single window.
         Returns:
             Raw logit of shape ``(B, 1)``.
         """
+        if amp_obs.shape[-1] != self.input_dim:
+            raise ValueError(
+                f"AMPDiscriminator.forward: expected input dim {self.input_dim}, "
+                f"got {amp_obs.shape[-1]}.  Check that env amp_obs_dim "
+                f"(={self.amp_obs_dim}) matches motion_loader output."
+            )
         if self.obs_normalizer is not None:
-            pair_dim = amp_obs_pair.shape[-1]
-            if pair_dim != self.input_dim:
-                raise ValueError(
-                    f"AMPDiscriminator.forward: expected input dim {self.input_dim} "
-                    f"(= 2 × amp_obs_dim {self.amp_obs_dim}), but got {pair_dim}. "
-                    f"Check that env amp obs dim ({pair_dim // 2} per step) matches "
-                    f"motion_loader obs dim ({self.amp_obs_dim // 2} per frame)."
-                )
-            s, s_next = amp_obs_pair.chunk(2, dim=-1)
-            s = self.obs_normalizer(s)
-            s_next = self.obs_normalizer(s_next)
-            amp_obs_pair = torch.cat([s, s_next], dim=-1)
+            amp_obs = self.obs_normalizer(amp_obs)
+        return self.head(self.trunk(amp_obs))
 
-        features = self.trunk(amp_obs_pair)
-        return self.head(features)
+    def predict_reward(self, amp_obs: torch.Tensor, dt: float = 1.0) -> torch.Tensor:
+        """Style reward from a single trajectory window.
 
-    def predict_reward(self, amp_obs: torch.Tensor, amp_obs_next: torch.Tensor) -> torch.Tensor:
-        """Style reward computed from raw logit (TienKung-style).
+        ``r = reward_scale * dt * clamp(1 - 0.25 * (D - 1)^2, min=0)``
 
-        r = reward_scale × clamp(1 - 0.25 * (D - 1)^2, min=0)
+        - At D = +1 (expert-like): r = reward_scale × dt × 1.0 (max)
+        - At D =  0 (boundary):    r = reward_scale × dt × 0.75
+        - At D = -1 (policy-like): r = reward_scale × dt × 0.0 (min)
 
-        At D = +1 (expert-like):   r = reward_scale × 1.0  (maximum)
-        At D =  0 (boundary):      r = reward_scale × 0.75
-        At D = -1 (policy-like):   r = reward_scale × 0.0  (minimum)
-        At |D - 1| ≥ 2 (very far): r = 0
-
-        Note: no tanh — the raw D is already bounded in practice by the grad
-        penalty and LSGAN targets at ±1.  This matches Peng et al. 2021 and
-        gives the disc room to learn meaningful score gradients instead of
-        saturating against a tanh asymptote.
+        Multiplying by ``dt`` (env step seconds) gives the reward an
+        intuitive "per-second" interpretation matching legged_lab's design.
         """
         with torch.no_grad():
-            pair = torch.cat([amp_obs, amp_obs_next], dim=-1)
-            d = self.forward(pair)
-            reward = self.reward_scale * torch.clamp(1.0 - 0.25 * (d - 1.0) ** 2, min=0.0)
+            d = self.forward(amp_obs)
+            reward = (
+                self.reward_scale
+                * dt
+                * torch.clamp(1.0 - 0.25 * (d - 1.0) ** 2, min=0.0)
+            )
         return reward
 
     def compute_loss(
         self,
-        policy_pair: torch.Tensor,
-        expert_pair: torch.Tensor,
+        policy_obs: torch.Tensor,
+        expert_obs: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """LSGAN loss with R1 gradient penalty.
+        """LSGAN loss + R1 gradient penalty.
 
-        Expert target = +1; policy target = -1.  Raw-logit MSE, no tanh.
-
-        Returns:
-            (amp_loss, grad_pen_loss, logit_reg_loss)
+        Args:
+            policy_obs: ``(B, amp_obs_dim)`` policy trajectory windows.
+            expert_obs: ``(B, amp_obs_dim)`` expert trajectory windows.
         """
-        all_pairs = torch.cat([policy_pair, expert_pair], dim=0)
-        all_logits = self.forward(all_pairs)
-        policy_logits, expert_logits = all_logits.split(policy_pair.shape[0], dim=0)
+        all_obs = torch.cat([policy_obs, expert_obs], dim=0)
+        all_logits = self.forward(all_obs)
+        policy_logits, expert_logits = all_logits.split(policy_obs.shape[0], dim=0)
 
         expert_loss = torch.nn.functional.mse_loss(
             expert_logits, torch.ones_like(expert_logits)
@@ -135,10 +123,8 @@ class AMPDiscriminator(nn.Module):
         )
         amp_loss = 0.5 * (expert_loss + policy_loss)
 
-        # R1 gradient penalty on expert data (λ * ||grad||^2)
-        grad_pen_loss = self._compute_gradient_penalty(expert_pair)
+        grad_pen_loss = self._compute_gradient_penalty(expert_obs)
 
-        # Logit regularization — kept for API compat but disabled by default.
         if self.logit_reg_coef > 0.0:
             logit_reg_loss = self.logit_reg_coef * torch.mean(
                 expert_logits**2 + policy_logits**2
@@ -148,34 +134,27 @@ class AMPDiscriminator(nn.Module):
 
         return amp_loss, grad_pen_loss, logit_reg_loss
 
-    def _compute_gradient_penalty(self, expert_pair: torch.Tensor) -> torch.Tensor:
+    def _compute_gradient_penalty(self, expert_obs: torch.Tensor) -> torch.Tensor:
         """R1 grad penalty: λ * E[||grad_x D(x)||^2] on expert data."""
-        expert_pair = expert_pair.detach().requires_grad_(True)
+        expert_obs = expert_obs.detach().requires_grad_(True)
 
         if self.obs_normalizer is not None:
-            s, s_next = expert_pair.chunk(2, dim=-1)
-            s_norm = self.obs_normalizer(s)
-            s_next_norm = self.obs_normalizer(s_next)
-            pair_norm = torch.cat([s_norm, s_next_norm], dim=-1)
+            obs_norm = self.obs_normalizer(expert_obs)
         else:
-            pair_norm = expert_pair
+            obs_norm = expert_obs
 
-        features = self.trunk(pair_norm)
-        logits = self.head(features)
+        logits = self.head(self.trunk(obs_norm))
 
         grad = torch.autograd.grad(
             outputs=logits,
-            inputs=expert_pair,
+            inputs=expert_obs,
             grad_outputs=torch.ones_like(logits),
             create_graph=True,
             retain_graph=True,
         )[0]
 
-        # TienKung form: λ * mean(||grad||^2)
-        grad_penalty = self.gradient_penalty_coef * grad.pow(2).sum(dim=1).mean()
-        return grad_penalty
+        return self.gradient_penalty_coef * grad.pow(2).sum(dim=1).mean()
 
     def update_normalizer(self, amp_obs: torch.Tensor) -> None:
-        """Update the observation normalizer with new data."""
         if self.obs_normalizer is not None:
             self.obs_normalizer.update(amp_obs)

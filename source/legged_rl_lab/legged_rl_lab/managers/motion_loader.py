@@ -52,6 +52,16 @@ _ROBOT_PROFILES: dict[str, dict] = {
         # Substring patterns matched against ``body_names`` loaded from the NPZ
         # to resolve foot body indices at runtime.  Order = [left, right].
         "foot_body_names": ("left_ankle_roll_link", "right_ankle_roll_link"),
+        # Key body names for Design-3 AMP features.  Order must match the
+        # env AMP observation order (see UnitreeG1AMPFlatEnvCfg.key_body_names).
+        "key_body_names": (
+            "left_ankle_roll_link",
+            "right_ankle_roll_link",
+            "left_wrist_yaw_link",
+            "right_wrist_yaw_link",
+            "left_shoulder_roll_link",
+            "right_shoulder_roll_link",
+        ),
         # Fallback indices if NPZ has no body_names (e.g. old files).
         "foot_body_indices": [],
         # G1 29-DOF default standing posture (matches UNITREE_G1_29DOF_CFG BFS order)
@@ -162,6 +172,26 @@ def _finite_diff(x: np.ndarray, fps: float) -> np.ndarray:
     vel[:-1] = (x[1:] - x[:-1]) * fps
     vel[-1] = vel[-2]           # repeat last frame
     return vel
+
+
+def _quat_to_tangent_normal_np(q: np.ndarray) -> np.ndarray:
+    """Rotate unit x-axis and z-axis by quaternion q, concatenate as (N, 6).
+
+    Matches :func:`legged_rl_lab.tasks.locomotion.amp.mdp.observations.amp_root_tan_norm`
+    — IsaacLab G1AmpEnv's ``quaternion_to_tangent_and_normal``.
+
+    Args:
+        q: ``(N, 4)`` quaternions in ``[w, x, y, z]``.
+    Returns:
+        ``(N, 6)`` — tangent(3) + normal(3) in world frame.
+    """
+    tan_ref = np.zeros_like(q[:, :3])
+    tan_ref[:, 0] = 1.0
+    norm_ref = np.zeros_like(q[:, :3])
+    norm_ref[:, 2] = 1.0
+    tan = _quat_rotate_np(q, tan_ref)
+    norm = _quat_rotate_np(q, norm_ref)
+    return np.concatenate([tan, norm], axis=-1)
 
 
 def _ang_vel_from_quats(q: np.ndarray, fps: float) -> np.ndarray:
@@ -343,30 +373,43 @@ class MotionLoader:
             body_ang = d["body_ang_vel_w"].astype(np.float32) # (N, B, 3)
             already_bfs = True
 
-            # Resolve foot body indices from body_names (if present).
-            # TienKung-style AMP features require foot positions in base frame,
-            # not base linear/angular velocity, to avoid the PhysX-vs-mocap
-            # distribution mismatch that saturates the discriminator.
+            # Resolve key body indices from body_names so the expert AMP
+            # features match the env's :func:`amp_key_body_pos_b` order.
+            self._runtime_key_body_indices = None
+            self._runtime_foot_body_indices = None
             if "body_names" in keys:
                 body_names = [
                     s.decode("utf-8") if isinstance(s, bytes) else str(s)
                     for s in d["body_names"]
                 ]
+                # Key bodies for Design-3 AMP features
+                key_patterns = self._profile.get("key_body_names", ())
+                key_idx = []
+                for pat in key_patterns:
+                    for i, name in enumerate(body_names):
+                        if pat == name or pat in name:
+                            key_idx.append(i)
+                            break
+                if len(key_idx) == len(key_patterns):
+                    self._runtime_key_body_indices = key_idx
+                    logger.info(
+                        f"[MotionLoader] Resolved key body indices: {key_idx} "
+                        f"(from names {key_patterns})"
+                    )
+                else:
+                    logger.warning(
+                        f"[MotionLoader] Could not resolve all key bodies "
+                        f"{key_patterns} in NPZ body_names — got {key_idx}"
+                    )
+                # Foot bodies (legacy / RSI use)
                 foot_patterns = self._profile.get("foot_body_names", ())
-                foot_body_indices = []
+                foot_idx = []
                 for pat in foot_patterns:
                     for i, name in enumerate(body_names):
-                        if pat in name:  # substring match
-                            foot_body_indices.append(i)
+                        if pat in name:
+                            foot_idx.append(i)
                             break
-                # Runtime-resolved foot indices win over the hardcoded profile.
-                self._runtime_foot_body_indices = foot_body_indices
-                logger.info(
-                    f"[MotionLoader] Resolved foot body indices from NPZ: "
-                    f"{foot_body_indices} (from names {foot_patterns})"
-                )
-            else:
-                self._runtime_foot_body_indices = None
+                self._runtime_foot_body_indices = foot_idx
         else:
             # AMASS schema
             dof_pos = d["dof_positions"].astype(np.float32)
@@ -387,30 +430,50 @@ class MotionLoader:
                 dof_vel = dof_vel[:, reorder_map]
                 logger.debug(f"Reordered joints from MuJoCo to IsaacLab BFS order")
 
-        # 1. joint_pos (RAW — not relative to default).
-        #    legged_lab uses raw joint_pos in all obs groups (policy, critic,
-        #    disc, disc_demo); the policy learns the absolute gait trajectory
-        #    rather than a delta.  This also simplifies disc feature matching:
-        #    env's ``joint_pos`` = motion data's ``dof_pos`` directly, no
-        #    alignment with default_joint_pos needed.
+        # ---- TienKung-style AMP features (83 dims for G1 with 6 key bodies) ----
+        # Order MUST match AMPCfg in amp_env_cfg.py:
+        #   joint_pos | joint_vel | root_height | root_tan_norm | key_body_pos_b
+        #
+        # NOTE: base linear/angular velocity DELIBERATELY EXCLUDED — these are
+        # PhysX-integrated on policy side vs finite-diff on expert side, the
+        # distribution gap is the main reason AMP discs saturate.
         jpos = dof_pos
-
-        # 2. joint_vel (finite-diff at motion fps, matches env at same fps)
         jvel = dof_vel
 
-        # 3. base angular velocity in base frame.
-        #    Feature set mirrors legged_lab's ``disc`` obs group:
-        #      base_ang_vel(3) + joint_pos(29) + joint_vel(29) = 61 per frame.
-        root_quat = body_rot[:, 0, :]  # (N, 4) [w,x,y,z]
-        base_ang_vel = _quat_rotate_inverse_np(root_quat, body_ang[:, 0, :])
+        root_quat = body_rot[:, 0, :]            # (N, 4) [w,x,y,z]
+        root_pos = body_pos[:, 0, :]             # (N, 3)
 
-        feature_blocks = [base_ang_vel, jpos, jvel]
+        root_height = root_pos[:, 2:3]                                       # (N, 1)
+        root_tan_norm = _quat_to_tangent_normal_np(root_quat)                # (N, 6)
+
+        # key body positions in base frame
+        key_indices = (
+            getattr(self, "_runtime_key_body_indices", None)
+            or self._profile.get("key_body_indices", [])
+        )
+        key_pos_parts = []
+        for idx in key_indices:
+            rel_w = body_pos[:, idx, :] - root_pos                           # (N, 3) world
+            pos_b = _quat_rotate_inverse_np(root_quat, rel_w)                # (N, 3) base
+            key_pos_parts.append(pos_b)
+        key_body_pos_b = (
+            np.concatenate(key_pos_parts, axis=1)
+            if key_pos_parts
+            else np.zeros((dof_pos.shape[0], 0), dtype=np.float32)
+        )
+
+        feature_blocks = [
+            jpos,
+            jvel,
+            root_height,
+            root_tan_norm,
+            key_body_pos_b,
+        ]
         amp_obs_np = np.concatenate(feature_blocks, axis=1)
         tensor = torch.from_numpy(amp_obs_np).to(self.device)
         self.data = tensor
 
-        # Keep foot_body_indices resolved for RSI or auxiliary observations.
-        root_pos = body_pos[:, 0, :]
+        # Foot body indices (kept for RSI / legacy paths)
 
         # Store raw state for RSI (Reference State Initialization)
         self.state_root_pos_w = torch.from_numpy(root_pos).to(self.device)
@@ -423,72 +486,21 @@ class MotionLoader:
         return tensor
 
     def _load_csv(self, path: str) -> torch.Tensor:
-        """Load LAFAN1-style CSV and convert to flat AMP feature vectors.
+        """Load LAFAN1-style CSV.
 
-        Column layout (G1, 30 FPS):
-          ``[x, y, z, qx, qy, qz, qw,  joint_0 … joint_N-1]``
-
-        Velocities are computed via finite difference at the file's native FPS
-        (default 30 Hz).
-
-        .. warning::
-            Foot positions require FK and are **not** available from CSV alone.
-            They are set to **zero** in the output.  If foot position features
-            are important for your discriminator, convert to .npz format first
-            or use the AMASS dataset instead.
+        .. error::
+            Direct CSV loading is **not supported** for the new Design-3
+            AMP feature layout — CSV lacks body positions / quaternions
+            needed for ``root_height``, ``root_tan_norm`` and
+            ``key_body_pos_b``.  Preprocess CSV → NPZ first via
+            ``scripts/csv_to_npz.py``.
         """
-        data_np = np.loadtxt(path, delimiter=",", dtype=np.float32)  # (N, 36+)
-        fps = self._profile.get("csv_fps", 30.0)
-
-        root_pos = data_np[:, :3]   # (N, 3)  x, y, z
-        quat_csv = data_np[:, 3:7]  # (N, 4)  format depends on robot
-
-        # Convert quaternion to [w, x, y, z]
-        csv_fmt = self._profile.get("csv_quat_format", "xyzw")
-        if csv_fmt == "xyzw":
-            # input: qx, qy, qz, qw → output: qw, qx, qy, qz
-            root_quat = np.concatenate([quat_csv[:, 3:4], quat_csv[:, :3]], axis=1)
-        else:
-            root_quat = quat_csv  # already [w,x,y,z]
-
-        num_dof = self._profile.get("num_dof", data_np.shape[1] - 7)
-        joint_pos = data_np[:, 7: 7 + num_dof]  # (N, J) in AMASS/DFS order
-
-        # Reorder joints from AMASS/DFS order to IsaacLab BFS order
-        reorder_map = self._profile.get("joint_reorder_map", None)
-        if reorder_map is not None:
-            joint_pos = joint_pos[:, reorder_map]
-            logger.debug("CSV: Reordered joints from AMASS to IsaacLab BFS order")
-
-        # joint_pos (RAW, matches env's joint_pos in base obs)
-        jpos = joint_pos
-
-        # velocities via finite difference at native CSV fps
-        jvel = _finite_diff(joint_pos, fps)                          # (N, J)
-        # Base angular velocity in body frame (from quat finite-diff)
-        base_ang_vel = _ang_vel_from_quats(root_quat, fps)            # (N, 3)
-
-        # Feature layout matches legged_lab disc obs:
-        #   base_ang_vel(3) + joint_pos(num_dof) + joint_vel(num_dof)
-        amp_obs_np = np.concatenate([base_ang_vel, jpos, jvel], axis=1)
-        tensor = torch.from_numpy(amp_obs_np).to(self.device)
-        self.data = tensor
-
-        # Below we still store raw state vectors for RSI, but base velocities
-        # are kept out of AMP features above — this only affects RSI init.
-        root_lin_vel_w = _finite_diff(root_pos, fps)  # (N, 3) world frame
-        base_ang_vel = _ang_vel_from_quats(root_quat, fps)  # body frame
-
-        # base_ang_vel is body-frame → rotate to world-frame for write_root_velocity_to_sim
-        ang_vel_w_np = _quat_rotate_np(root_quat, base_ang_vel)
-        self.state_root_pos_w = torch.from_numpy(root_pos).to(self.device)
-        self.state_root_quat = torch.from_numpy(root_quat).to(self.device)  # [w,x,y,z]
-        self.state_root_lin_vel_w = torch.from_numpy(root_lin_vel_w).to(self.device)
-        self.state_root_ang_vel_w = torch.from_numpy(ang_vel_w_np).to(self.device)
-        self.state_joint_pos = torch.from_numpy(joint_pos).to(self.device)  # BFS order
-        self.state_joint_vel = torch.from_numpy(jvel).to(self.device)
-
-        return tensor
+        raise RuntimeError(
+            f"CSV loading is no longer supported for AMP training "
+            f"(file: {path}). Preprocess to NPZ first:\n"
+            f"  python scripts/csv_to_npz.py -f {path} "
+            f"--input_fps 30 --output_fps 30 --headless"
+        )
 
     def _load_directory(self, path: str) -> torch.Tensor:
         """Recursively load all supported motion files from a directory."""

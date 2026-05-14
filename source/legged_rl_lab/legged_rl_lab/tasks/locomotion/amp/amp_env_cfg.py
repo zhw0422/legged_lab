@@ -122,13 +122,12 @@ class ActionsCfg:
 class ObservationsCfg:
     """Observation specifications for the MDP.
 
-    Mirrors legged_lab's structure:
-      - policy: base_ang_vel + root_local_rot_tan_norm (6D rot, no proj_grav)
-                + velocity_commands + joint_pos (raw) + joint_vel + actions,
-                history_length=5, flatten.
-      - critic: same as policy + base_lin_vel (privileged), history_length=5.
-      - amp:    discriminator obs group — base_ang_vel + joint_pos + joint_vel,
-                history_length=10, NOT flattened (fed as [B, 10, 61] to disc).
+    Following IsaacLab's official G1AmpEnv design:
+      - policy: yaw-removed base pose + commands + raw joint state + actions
+      - critic: same as policy + base_lin_vel + key_body_pos_b (privileged)
+      - amp:    Design-3 features (89 dim/frame for G1) — joint_pos +
+                joint_vel + root_height + root_tan_norm + root_lin_vel_b +
+                root_ang_vel_b + key_body_pos_b.  history_length=2.
     """
 
     @configclass
@@ -145,6 +144,9 @@ class ObservationsCfg:
         joint_pos = ObsTerm(func=mdp.amp_joint_pos, noise=Unoise(n_min=-0.01, n_max=0.01))
         joint_vel = ObsTerm(func=mdp.joint_vel, noise=Unoise(n_min=-1.5, n_max=1.5))
         actions = ObsTerm(func=mdp.last_action)
+        # TienKung-style gait phase clock.  Gives policy an explicit step-timing
+        # prior — sin/cos of left/right leg phase + duty ratios (6 dims).
+        gait_phase = ObsTerm(func=mdp.gait_phase_obs)
 
         def __post_init__(self):
             self.history_length = 5
@@ -165,6 +167,14 @@ class ObservationsCfg:
         joint_pos = ObsTerm(func=mdp.amp_joint_pos)
         joint_vel = ObsTerm(func=mdp.joint_vel)
         actions = ObsTerm(func=mdp.last_action)
+        # Gait phase clock (also given to critic)
+        gait_phase = ObsTerm(func=mdp.gait_phase_obs)
+        # Key body positions in base frame — privileged spatial info for the
+        # value function (legged_lab also adds this to critic).
+        key_body_pos_b = ObsTerm(
+            func=mdp.amp_key_body_pos_b,
+            params={"asset_cfg": SceneEntityCfg("robot", body_names=())},
+        )
         height_scan = ObsTerm(
             func=mdp.height_scan,
             params={"sensor_cfg": SceneEntityCfg("height_scanner")},
@@ -181,21 +191,24 @@ class ObservationsCfg:
 
     @configclass
     class AMPCfg(ObsGroup):
-        """Discriminator observations.
+        """Discriminator observations (TienKung-style, no base velocity).
 
-        Pure motion features:
-          base_ang_vel(3) + joint_pos(num_dof) + joint_vel(num_dof)
+        Per-frame layout (83 dims for G1 with 6 key bodies)::
 
-        history_length=10 with flatten — for AMP-PPO we still use a flat
-        (B, hl*dim) tensor through the existing pair-based discriminator.
-        Longer window (10 frames ≈ 0.33s at 30Hz, ≈ half stride) lets the
-        discriminator see gait rhythm rather than instantaneous values, which
-        is the key fix for disc-saturation per legged_lab's design.
+            joint_pos(num_dof) + joint_vel(num_dof)
+            + root_height(1) + root_tan_norm(6)
+            + key_body_pos_b(num_keys * 3)
+
+        TienKung-Lab REMOVES base linear/angular velocity from disc obs because
+        these are PhysX-integrated on the policy side and finite-difference on
+        the expert (mocap) side — the resulting distribution gap is the single
+        biggest reason AMP discriminators saturate at 1.0.  Pose-level
+        quantities (joint state + key body positions + root height/orientation)
+        are well-aligned between physics and mocap.
+
+        history_length=2, flatten=True ⇒ env outputs (B, 166) flat tensor.
         """
-        base_ang_vel = ObsTerm(
-            func=mdp.amp_base_ang_vel,
-            params={"asset_cfg": SceneEntityCfg("robot")},
-        )
+        # IMPORTANT: order must match motion_loader feature concatenation
         joint_pos = ObsTerm(
             func=mdp.amp_joint_pos,
             params={"asset_cfg": SceneEntityCfg("robot")},
@@ -204,9 +217,21 @@ class ObservationsCfg:
             func=mdp.amp_joint_vel,
             params={"asset_cfg": SceneEntityCfg("robot")},
         )
+        root_height = ObsTerm(
+            func=mdp.amp_root_height,
+            params={"asset_cfg": SceneEntityCfg("robot")},
+        )
+        root_tan_norm = ObsTerm(
+            func=mdp.amp_root_tan_norm,
+            params={"asset_cfg": SceneEntityCfg("robot")},
+        )
+        key_body_pos_b = ObsTerm(
+            func=mdp.amp_key_body_pos_b,
+            params={"asset_cfg": SceneEntityCfg("robot", body_names=())},
+        )
 
         def __post_init__(self):
-            self.history_length = 10
+            self.history_length = 2
             self.enable_corruption = False
             self.concatenate_terms = True
 

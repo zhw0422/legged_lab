@@ -151,12 +151,6 @@ def amp_learn(runner: OnPolicyRunner, num_learning_iterations: int, init_at_rand
 
         # -- Rollout phase --
         with torch.inference_mode():
-            # Get initial AMP obs
-            if has_amp and "amp" in obs.keys():
-                amp_obs = obs["amp"].clone()
-            else:
-                amp_obs = None
-
             ep_task_rewards = torch.zeros(env.num_envs, device=device)
             ep_style_rewards = torch.zeros(env.num_envs, device=device)
 
@@ -164,19 +158,13 @@ def amp_learn(runner: OnPolicyRunner, num_learning_iterations: int, init_at_rand
                 # 1. Sample actions from policy
                 actions = alg.act(obs)
 
-                # 2. Record AMP obs before stepping (for replay buffer pairing)
-                if has_amp and amp_obs is not None:
-                    alg.record_amp_obs(amp_obs)
-
-                # 3. Step the environment
+                # 2. Step the environment
                 obs, rewards, dones, extras = env.step(actions.to(env.device))
 
                 if check_for_nan:
                     try:
                         check_nan(obs, rewards, dones)
                     except ValueError as e:
-                        # NaN in physics output: log and zero out the affected tensors
-                        # rather than crashing the whole distributed job.
                         import warnings
                         warnings.warn(
                             f"[rank {runner.gpu_global_rank}] NaN detected in env output: {e}. "
@@ -186,7 +174,7 @@ def amp_learn(runner: OnPolicyRunner, num_learning_iterations: int, init_at_rand
                         for key in obs.keys():
                             obs[key] = torch.nan_to_num(obs[key], nan=0.0)
                         rewards = torch.nan_to_num(rewards, nan=0.0)
-                        dones = torch.nan_to_num(dones, nan=1.0)  # treat as done to force reset
+                        dones = torch.nan_to_num(dones, nan=1.0)
 
                 obs, rewards, dones = (
                     obs.to(device),
@@ -194,43 +182,32 @@ def amp_learn(runner: OnPolicyRunner, num_learning_iterations: int, init_at_rand
                     dones.to(device),
                 )
 
-                # 4. Get next AMP obs and compute style reward
+                # 3. Single-window AMP processing.
+                # We use the env's pre-reset AMP obs (extras["amp_obs"]) so the
+                # discriminator sees the actual physics state, not post-reset
+                # artifacts.  Style reward = D(amp_obs) × dt.
                 if has_amp:
-                    # Use pre-reset AMP obs from extras (computed before env reset)
                     if "amp_obs" in extras and extras["amp_obs"] is not None:
-                        next_amp_obs = extras["amp_obs"].to(device)
+                        amp_obs = extras["amp_obs"].to(device)
                     elif "amp" in obs.keys():
-                        next_amp_obs = obs["amp"].clone()
+                        amp_obs = obs["amp"].clone()
                     else:
-                        next_amp_obs = None
+                        amp_obs = None
 
-                    if amp_obs is not None and next_amp_obs is not None:
-                        # 5. Compute style reward
-                        style_rewards = alg.compute_style_reward(amp_obs, next_amp_obs)
-
-                        # 6. Blend task and style rewards
+                    if amp_obs is not None:
+                        # Style reward × env step_dt
+                        style_rewards = alg.compute_style_reward(amp_obs, dt=env.unwrapped_env.cfg.sim.dt * env.unwrapped_env.cfg.decimation)
+                        # Blend task + style
                         blended_rewards = alg.blend_rewards(rewards, style_rewards)
-
                         # Track for logging
                         ep_task_rewards += rewards
                         ep_style_rewards += style_rewards.view(-1)
-
-                        # 7. Store in replay buffer
-                        alg.process_amp_transition(next_amp_obs)
-
-                        # 8. Process env step with blended rewards
+                        # Insert single window into replay buffer
+                        alg.process_amp_transition(amp_obs)
+                        # Process env step with blended rewards
                         alg.process_env_step(obs, blended_rewards, dones, extras)
-
-                        # Update amp_obs for next step
-                        if "amp" in obs.keys():
-                            amp_obs = obs["amp"].clone()
-                        else:
-                            amp_obs = next_amp_obs
                     else:
-                        # No AMP obs available, use task reward only
                         alg.process_env_step(obs, rewards, dones, extras)
-                        if "amp" in obs.keys():
-                            amp_obs = obs["amp"].clone()
                 else:
                     # No AMP, standard PPO
                     alg.process_env_step(obs, rewards, dones, extras)
