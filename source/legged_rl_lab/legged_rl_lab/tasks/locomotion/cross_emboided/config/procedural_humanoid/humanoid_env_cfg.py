@@ -42,7 +42,7 @@ PROCEDURAL_HUMANOID_CFG = ArticulationCfg(
         ),
         torso_link_length_range=(0.10, 0.16),
         torso_link_width_range=(0.18, 0.26),
-        torso_link_height_range=(0.2, 0.3),
+        torso_link_height_range=(0.2, 0.8),
         pelvis_height_range=(0.05, 0.08),
         hip_spacing_range=(0.16, 0.24),
         hip_pitch_link_length_range=(0.03, 0.06),

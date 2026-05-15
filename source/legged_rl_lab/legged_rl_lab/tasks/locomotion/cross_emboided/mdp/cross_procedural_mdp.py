@@ -265,16 +265,24 @@ def _build_biped_adjacency(n: int = _BIPED_DOF) -> torch.Tensor:
 
 
 def _build_quad_adjacency_padded(n: int = _BIPED_DOF) -> torch.Tensor:
-    """12-DOF quad kinematic tree padded to *n* (isolated nodes beyond 12)."""
+    """12-DOF quad kinematic tree padded to *n* (isolated nodes beyond 12).
+
+    IsaacLab sorts joints alphabetically, so within each leg group of 3 joints
+    (prefix FL/FR/RL/RR) the order is: calf(+0) < hip(+1) < thigh(+2).
+    Kinematic chain: body → hip → thigh → calf (root-to-tip).
+    """
     adj = torch.eye(n)
-    # Per-leg chain: hip → thigh → calf (tree-order: 3 joints per leg)
+    # Per-leg chain (alphabetical order: calf=+0, hip=+1, thigh=+2)
+    # Connections: hip ↔ thigh and thigh ↔ calf
     for leg_base in (0, 3, 6, 9):
-        adj[leg_base, leg_base + 1] = 1.0
-        adj[leg_base + 1, leg_base] = 1.0
+        # hip(+1) ↔ thigh(+2): adjacent in kinematic chain
         adj[leg_base + 1, leg_base + 2] = 1.0
         adj[leg_base + 2, leg_base + 1] = 1.0
-    # Base connections (all hip joints share base body)
-    hips = [0, 3, 6, 9]
+        # thigh(+2) ↔ calf(+0): adjacent in kinematic chain
+        adj[leg_base + 2, leg_base] = 1.0
+        adj[leg_base, leg_base + 2] = 1.0
+    # Base connections (all hip joints share the base body)
+    hips = [1, 4, 7, 10]
     for i in range(len(hips)):
         for j in range(i + 1, len(hips)):
             adj[hips[i], hips[j]] = 1.0
@@ -321,6 +329,10 @@ class GCNObsEncoder(nn.Module):
 
     def forward(self, x: torch.Tensor, is_biped: torch.Tensor | None = None) -> torch.Tensor:
         L = self.layout
+        # Auto-infer is_biped from the robot-type token in morphology params
+        # (morph[0] = +1.0 for biped, -1.0 for quad — set by setup helpers)
+        if is_biped is None:
+            is_biped = x[:, L.morph_start] > 0
         tokens = self._tokenise(x)
         h = self.input_proj(tokens)  # (B, n_joints, d)
 
