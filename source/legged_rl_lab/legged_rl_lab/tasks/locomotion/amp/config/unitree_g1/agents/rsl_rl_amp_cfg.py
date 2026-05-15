@@ -53,10 +53,8 @@ class UnitreeG1AMPFlatPPORunnerCfg(RslRlOnPolicyRunnerCfg):
         max_grad_norm=1.0,
         amp_cfg={
             # Design-3 single-window discriminator:
-            #   per-frame = 29+29+1+6+3+3+18 = 89
-            #   history_length = 2, input dim to disc = 178
-            # Moderate hidden dims (we no longer feed redundant pair of 10-frame
-            # windows at 1220 dim, so 178 → [512, 256] is enough).
+            #   per-frame = 29+29+1+6+18 = 83
+            #   history_length = 2, input dim to disc = 166
             "amp_discriminator_hidden_dims": [512, 256],
             "amp_discriminator_activation": "relu",
             # Discriminator gets its own low LR to prevent saturation — legged_lab
@@ -78,5 +76,10 @@ class UnitreeG1AMPFlatPPORunnerCfg(RslRlOnPolicyRunnerCfg):
             # reward = scale × dt × clamp(..., 0, 1).  With dt=1/30 and scale=5,
             # per-step style ≤ 5/30 ≈ 0.17 — comparable to per-step task ~0.5.
             "amp_reward_scale": 5.0,
+            # Label smoothing on disc targets (±0.9 instead of ±1.0).  Caps
+            # disc accuracy at ~95% so the gradient through the style reward
+            # doesn't collapse to 0 when the disc would otherwise saturate
+            # against an under-trained policy.
+            "amp_disc_label_smoothing": 0.1,
         },
     )

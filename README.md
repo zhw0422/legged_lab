@@ -371,42 +371,36 @@ source/legged_rl_lab/legged_rl_lab/data/motion/
 
 ### AMP (Adversarial Motion Priors)
 
-Motion data can be either a single file (`.csv` / `.npz` / `.npy` / `.pt`) or a directory —
-`MotionLoader` dispatches on suffix and walks directories recursively. The default motion
-file is `LAFAN1_Retargeting_Dataset/g1/walk1_subject1.csv`. Override with `--motion_file`:
+The motion data path is configured directly in the env config (`amp_flat_env_cfg.py`) and points to a
+**walks-only subset** of LAFAN1 (`g1_walk_only_npz`: 6 clips — walk1/walk2 subjects).
+Run/sprint clips are intentionally excluded: mixing walk (~1 m/s) with sprint (~4 m/s) lets the
+discriminator trivially separate expert from policy from the first iteration, collapsing the style
+reward to zero before the policy has any chance to learn.
+
+The env also uses **Reference State Initialization (RSI)**: at each reset the robot is spawned from
+a near-stable reference frame (low base velocity + upright posture) instead of the default pose,
+which breaks the "stand in place" local optimum that otherwise dominates early training.
 
 ```bash
-# Train with the default (LAFAN1 walk1_subject1.csv)
+# Train — G1 humanoid, flat terrain, AMP + RSI (recommended: 1500+ iterations)
 python scripts/amp/train.py \
     --task LeggedRLLab-Isaac-AMP-Flat-Unitree-G1-v0 \
     --num_envs 4096 \
     --headless
 
-# Train with a different LAFAN1 clip
+# Resume from a checkpoint
 python scripts/amp/train.py \
     --task LeggedRLLab-Isaac-AMP-Flat-Unitree-G1-v0 \
-    --motion_file source/legged_rl_lab/legged_rl_lab/data/motion/LAFAN1_Retargeting_Dataset/g1/dance1_subject1.csv \
-    --num_envs 4096 --headless
-
-# Train with an entire LAFAN1 category (all walk CSVs)
-python scripts/amp/train.py \
-    --task LeggedRLLab-Isaac-AMP-Flat-Unitree-G1-v0 \
-    --motion_file source/legged_rl_lab/legged_rl_lab/data/motion/LAFAN1_Retargeting_Dataset/g1 \
-    --num_envs 4096 --headless
-
-# Train with AMASS NPZ (only if AMASS_Retargeted_for_G1 dataset is downloaded)
-python scripts/amp/train.py \
-    --task LeggedRLLab-Isaac-AMP-Flat-Unitree-G1-v0 \
-    --motion_file source/legged_rl_lab/legged_rl_lab/data/motion/AMASS_Retargeted_for_G1/g1 \
-    --num_envs 4096 --headless
+    --num_envs 4096 \
+    --headless \
+    --resume
 ```
 
 ```bash
-#Play
+# Play / visualise
 python scripts/amp/play.py \
     --task LeggedRLLab-Isaac-AMP-Flat-Unitree-G1-Play-v0 \
-    --motion_file source/legged_rl_lab/legged_rl_lab/data/motion/LAFAN1_Retargeting_Dataset/g1/walk1_subject1.csv \
-    --num_envs 32
+    --num_envs 50
 ```
 
 ### Motion Tracking

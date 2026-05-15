@@ -68,7 +68,7 @@ class UnitreeG1AMPFlatEnvCfg(LocomotionAMPRoughEnvCfg):
         key_body_cfg = SceneEntityCfg(
             "robot", body_names=list(self.key_body_names), preserve_order=True
         )
-        self.observations.amp.key_body_pos_b.params["asset_cfg"] = key_body_cfg
+        self.observations.amp.features.params["asset_cfg"] = key_body_cfg
         self.observations.critic.key_body_pos_b.params["asset_cfg"] = key_body_cfg
 
         # ----------------------------- Actions -----------------------------
@@ -79,17 +79,36 @@ class UnitreeG1AMPFlatEnvCfg(LocomotionAMPRoughEnvCfg):
         self.events.base_external_force_torque.params["asset_cfg"].body_names = [self.base_link_name]
         self.events.push_robot = None
 
-        # RSI disabled for LAFAN1 walk1_subject1 — the clip contains no
-        # standing frames, so RSI always spawns the robot mid-stride with one
-        # foot airborne, and the still-random policy can't hold it up.  The
-        # base_height / bad_orientation terminations then fire within ~1s,
-        # leaving no room to learn.
+        # Reference State Initialization (RSI).  Spawns the robot from a
+        # near-stable frame of the LAFAN1 walks (filtered by base velocity
+        # and root height) so the policy has to learn to *move while not
+        # falling* instead of converging on the trivial "stand in default
+        # pose" local optimum.  legged_lab/TienKung-Lab both rely on RSI to
+        # break this local optimum.
         #
-        # legged_lab uses RSI with datasets that include "Stand_to_Walk"
-        # clips so the robot starts from an upright stance.  Re-enable once
-        # we have such clips preprocessed; meanwhile the motion data is only
-        # used as the AMP discriminator's expert source.
-        self.events.reset_from_ref = None
+        # Critical: RSI must run AFTER ``reset_base`` and
+        # ``reset_robot_joints`` so its absolute joint state and root pose
+        # overwrite their uniform-noise initialization.  IsaacLab's
+        # EventManager applies events in the order they appear on the cfg
+        # class — assigning here (after super().__post_init__()) appends to
+        # the end.  We also disable the uniform joint scaling so the RSI
+        # joint pose isn't perturbed by 0.5–1.5× scaling.
+        from isaaclab.managers import EventTermCfg as EventTerm
+        self.events.reset_robot_joints = None  # RSI provides absolute joint state
+        self.events.reset_from_ref = EventTerm(
+            func=mdp.reset_from_reference_motion,
+            mode="reset",
+            params={
+                "asset_cfg": SceneEntityCfg("robot"),
+                "height_offset": 0.05,
+                # ~12% of LAFAN1 walk frames satisfy these — about 5500
+                # near-stable frames, plenty for RSI sampling diversity
+                # without spawning mid-stride with one foot airborne.
+                "max_lin_vel_xy": 0.5,
+                "max_ang_vel": 1.0,
+                "min_root_height": 0.65,
+            },
+        )
 
         # ----------------------------- Rewards (legged_lab G1 style) -----------------------------
         # Disable old "is_alive" — replaced by negative termination_penalty
@@ -173,15 +192,16 @@ class UnitreeG1AMPFlatEnvCfg(LocomotionAMPRoughEnvCfg):
         self.commands.base_velocity.ranges.ang_vel_z = (-1.0, 1.0)
 
         # ----------------------------- AMP Motion Data -----------------------------
-        # Default: directory of preprocessed walk NPZs (4 clips for variety).
-        # MotionLoader walks the directory, concatenates all NPZs into one
-        # reference dataset.  To preprocess additional clips:
-        #   python scripts/csv_to_npz.py -f path/to/walkN_subjectM.csv \
-        #       --input_fps 30 --output_fps 30 --headless
+        # Walks-only subset.  Mixing walks with runs/sprints (1 m/s vs 4 m/s)
+        # gives the discriminator a target distribution that a freshly-initialised
+        # policy can't possibly match — disc saturates at >99% accuracy and the
+        # style reward collapses to zero.  Starting from walks only keeps the
+        # expert distribution narrow enough that the policy's gait learning has
+        # a chance to catch up before the disc wins.
         self.robot_type = "g1"
         self.amp_motion_files = os.path.join(
             LEGGED_RL_LAB_ROOT_DIR,
-            "data", "motion", "LAFAN1_Retargeting_Dataset", "g1_locomotion_npz",
+            "data", "motion", "LAFAN1_Retargeting_Dataset", "g1_walk_only_npz",
         )
 
 @configclass

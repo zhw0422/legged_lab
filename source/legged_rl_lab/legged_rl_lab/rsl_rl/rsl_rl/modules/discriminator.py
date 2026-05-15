@@ -38,6 +38,7 @@ class AMPDiscriminator(nn.Module):
         logit_reg_coef: float = 0.0,
         weight_decay: float = 1e-4,
         obs_normalization: bool = True,
+        label_smoothing: float = 0.0,
     ) -> None:
         super().__init__()
         self.amp_obs_dim = amp_obs_dim
@@ -46,6 +47,10 @@ class AMPDiscriminator(nn.Module):
         self.gradient_penalty_coef = gradient_penalty_coef
         self.logit_reg_coef = logit_reg_coef
         self.weight_decay = weight_decay
+        # Label smoothing — train disc to predict ±(1 - smoothing) instead of ±1.
+        # Caps disc accuracy at ~95% in practice and prevents the saturation
+        # mode where policy logits go to -∞ and style reward collapses to 0.
+        self.label_smoothing = label_smoothing
 
         self.trunk = MLP(
             input_dim=self.input_dim,
@@ -115,11 +120,13 @@ class AMPDiscriminator(nn.Module):
         all_logits = self.forward(all_obs)
         policy_logits, expert_logits = all_logits.split(policy_obs.shape[0], dim=0)
 
+        pos_target = 1.0 - self.label_smoothing
+        neg_target = -1.0 + self.label_smoothing
         expert_loss = torch.nn.functional.mse_loss(
-            expert_logits, torch.ones_like(expert_logits)
+            expert_logits, torch.full_like(expert_logits, pos_target)
         )
         policy_loss = torch.nn.functional.mse_loss(
-            policy_logits, -torch.ones_like(policy_logits)
+            policy_logits, torch.full_like(policy_logits, neg_target)
         )
         amp_loss = 0.5 * (expert_loss + policy_loss)
 

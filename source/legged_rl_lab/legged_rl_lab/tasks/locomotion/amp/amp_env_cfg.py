@@ -207,26 +207,23 @@ class ObservationsCfg:
         are well-aligned between physics and mocap.
 
         history_length=2, flatten=True ⇒ env outputs (B, 166) flat tensor.
+
+        .. important::
+           A *single* combined ObsTerm is used here so that the group-level
+           history flattening produces a frame-major layout
+           ``[features_{t-1}, features_t]``.  If we instead used five
+           separate terms, IsaacLab buffers each term's history independently
+           and the flat output becomes feature-major
+           ``[jpos_{t-1}, jpos_t, jvel_{t-1}, jvel_t, ...]`` — which does
+           NOT match motion_loader's expert sampling
+           ``cat([frame_t, frame_{t+1}], dim=-1)`` and causes the
+           discriminator to saturate at 100% accuracy on day one.
         """
-        # IMPORTANT: order must match motion_loader feature concatenation
-        joint_pos = ObsTerm(
-            func=mdp.amp_joint_pos,
-            params={"asset_cfg": SceneEntityCfg("robot")},
-        )
-        joint_vel = ObsTerm(
-            func=mdp.amp_joint_vel,
-            params={"asset_cfg": SceneEntityCfg("robot")},
-        )
-        root_height = ObsTerm(
-            func=mdp.amp_root_height,
-            params={"asset_cfg": SceneEntityCfg("robot")},
-        )
-        root_tan_norm = ObsTerm(
-            func=mdp.amp_root_tan_norm,
-            params={"asset_cfg": SceneEntityCfg("robot")},
-        )
-        key_body_pos_b = ObsTerm(
-            func=mdp.amp_key_body_pos_b,
+        # Single combined term — its layout matches motion_loader's per-frame
+        # output exactly.  ``key_body_pos_b`` body_names are wired up in the
+        # robot-specific config (e.g. UnitreeG1AMPFlatEnvCfg.__post_init__).
+        features = ObsTerm(
+            func=mdp.amp_full_features,
             params={"asset_cfg": SceneEntityCfg("robot", body_names=())},
         )
 

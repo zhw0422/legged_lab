@@ -128,6 +128,44 @@ def amp_key_body_pos_b(
     return pos_b.reshape(pos_b.shape[0], -1)
 
 
+def amp_full_features(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot", body_names=()),
+) -> torch.Tensor:
+    """All AMP per-frame features concatenated in one term.
+
+    Layout (must match motion_loader's per-frame layout exactly)::
+
+        joint_pos(num_dof) | joint_vel(num_dof) | root_height(1) |
+        root_tan_norm(6) | key_body_pos_b(num_keys * 3)
+
+    For G1 with 29 DOF + 6 key bodies → 83 dims/frame.
+
+    .. important::
+       This is a *single* observation term so that when the AMP
+       ObservationGroup applies ``history_length=2`` with
+       ``flatten_history_dim=True``, the resulting flat layout is::
+
+           [features_{t-1} (83) , features_t (83)]
+
+       which matches motion_loader's expert sampling
+       ``[features_t (83) , features_{t+1} (83)]``.
+
+       If we used five separate terms, IsaacLab would buffer each term's
+       history *independently* and the flat output becomes
+       ``[jpos_{t-1}, jpos_t, jvel_{t-1}, jvel_t, ...]`` — a feature-major
+       layout that does NOT match the expert's frame-major layout.  The
+       discriminator then trivially distinguishes the two and saturates
+       at 100% accuracy, providing no useful style gradient.
+    """
+    jpos = amp_joint_pos(env)                                # (N, num_dof)
+    jvel = amp_joint_vel(env)                                # (N, num_dof)
+    rh = amp_root_height(env)                                # (N, 1)
+    rtn = amp_root_tan_norm(env)                             # (N, 6)
+    kbp = amp_key_body_pos_b(env, asset_cfg=asset_cfg)       # (N, num_keys * 3)
+    return torch.cat([jpos, jvel, rh, rtn, kbp], dim=-1)
+
+
 # ---------------------------------------------------------------------------
 # Legacy: foot positions only (kept for backwards-compat, not used now)
 # ---------------------------------------------------------------------------

@@ -64,31 +64,92 @@ def _get_loader(env) -> MotionLoader | None:
     return loader
 
 
+def _get_rsi_eligible_indices(
+    env,
+    loader: MotionLoader,
+    max_lin_vel_xy: float | None,
+    max_ang_vel: float | None,
+    min_root_height: float | None,
+) -> torch.Tensor:
+    """Cache-and-return frame indices eligible for RSI sampling.
+
+    Filters the loaded reference motion to frames that are "easy" initial
+    states for a freshly-trained policy: slow base motion + upright pose.
+    Spawning a random policy mid-stride (foot airborne) gives the
+    base_height / bad_orientation terminations no time to do anything but
+    fire — the policy never gets a chance to learn.
+
+    Cache key incorporates the threshold tuple so changing the cfg
+    invalidates the cache.
+    """
+    cache_key = (max_lin_vel_xy, max_ang_vel, min_root_height)
+    cached = getattr(env, "_amp_rsi_eligible_cache", None)
+    if cached is not None and cached[0] == cache_key:
+        return cached[1]
+
+    n = loader.state_root_pos_w.shape[0]
+    mask = torch.ones(n, dtype=torch.bool, device=env.device)
+    if max_lin_vel_xy is not None:
+        v = torch.linalg.vector_norm(loader.state_root_lin_vel_w[:, :2], dim=-1)
+        mask &= v < max_lin_vel_xy
+    if max_ang_vel is not None:
+        w = torch.linalg.vector_norm(loader.state_root_ang_vel_w, dim=-1)
+        mask &= w < max_ang_vel
+    if min_root_height is not None:
+        mask &= loader.state_root_pos_w[:, 2] > min_root_height
+    eligible = mask.nonzero(as_tuple=False).squeeze(-1)
+    if eligible.numel() == 0:
+        warnings.warn(
+            f"[RSI] No frames satisfy filter "
+            f"(max_lin_vel_xy={max_lin_vel_xy}, max_ang_vel={max_ang_vel}, "
+            f"min_root_height={min_root_height}).  Falling back to all "
+            f"{n} frames.",
+            stacklevel=1,
+        )
+        eligible = torch.arange(n, device=env.device)
+    else:
+        print(
+            f"[RSI] Eligible frames: {eligible.numel()} / {n} "
+            f"({100 * eligible.numel() / n:.1f}%) "
+            f"after filter (|v_xy|<{max_lin_vel_xy}, |w|<{max_ang_vel}, "
+            f"h>{min_root_height})"
+        )
+    env._amp_rsi_eligible_cache = (cache_key, eligible)  # type: ignore[attr-defined]
+    return eligible
+
+
 def reset_from_reference_motion(
     env,
     env_ids: torch.Tensor,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
-    height_offset: float = 0.1,
+    height_offset: float = 0.05,
+    max_lin_vel_xy: float | None = 0.5,
+    max_ang_vel: float | None = 1.0,
+    min_root_height: float | None = 0.65,
 ) -> None:
-    """Reset robot state by sampling a random reference motion frame (RSI).
+    """Reset robot state by sampling a near-stable reference motion frame (RSI).
+
+    Filters reference frames to those with low base velocity and upright
+    height — a randomly-initialised policy spawned mid-stride has no chance
+    of catching itself before height/orientation terminations fire.  The
+    filter shrinks the sampling pool to "almost-standing" frames within
+    walking clips, which the policy CAN recover from.
 
     Also stores the sampled frame index per env at ``env._ref_frame_start`` so
     that :func:`joint_deviation_from_reference` can phase-advance through the
     same reference clip.
-
-    Adds a small ``height_offset`` (legged_lab uses 0.1m) so the robot doesn't
-    spawn with its feet clipping into the ground due to mocap floor-height
-    inconsistencies.  Without this, many RSI samples spawn below the kinematic
-    ground plane and get catapulted on the first physics step → bad_orientation
-    termination fires immediately.
-
-    No-op if motion data is unavailable or carries no raw state.
 
     Args:
         env: The RL environment instance.
         env_ids: Indices of environments to reset.
         asset_cfg: Scene entity config for the robot articulation.
         height_offset: Extra Z added to the motion-supplied root height.
+        max_lin_vel_xy: Drop reference frames with base XY speed above this.
+            None = no filter.
+        max_ang_vel: Drop reference frames with base angular speed above this.
+            None = no filter.
+        min_root_height: Drop reference frames where root z is below this.
+            None = no filter.
     """
     loader = _get_loader(env)
     if loader is None:
@@ -98,9 +159,12 @@ def reset_from_reference_motion(
     if n == 0:
         return
 
-    # Sample indices directly so we can record them on env for termination.
-    num_frames = loader.num_frames
-    idx = torch.randint(0, num_frames, (n,), device=env.device)
+    # Sample only from frames that pass the velocity / height filter.
+    eligible = _get_rsi_eligible_indices(
+        env, loader, max_lin_vel_xy, max_ang_vel, min_root_height
+    )
+    pick = torch.randint(0, eligible.numel(), (n,), device=env.device)
+    idx = eligible[pick]
 
     # Persistent per-env buffer: remember which reference frame each env started
     # from, so the termination term can advance phase with episode_length_buf.

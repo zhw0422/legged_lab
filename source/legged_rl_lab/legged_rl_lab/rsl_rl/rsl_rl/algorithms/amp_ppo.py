@@ -120,6 +120,7 @@ class AMPPPO(PPO):
         logit_reg_coef = self._amp_cfg.get("amp_disc_logit_reg_coef", 0.05)
         disc_weight_decay = self._amp_cfg.get("amp_disc_weight_decay", 1e-4)
         obs_norm = self._amp_cfg.get("amp_disc_obs_normalization", True)
+        label_smoothing = self._amp_cfg.get("amp_disc_label_smoothing", 0.0)
 
         self.discriminator = AMPDiscriminator(
             amp_obs_dim=amp_obs_dim,
@@ -130,6 +131,7 @@ class AMPPPO(PPO):
             logit_reg_coef=logit_reg_coef,
             weight_decay=disc_weight_decay,
             obs_normalization=obs_norm,
+            label_smoothing=label_smoothing,
         ).to(self.device)
 
         # Create replay buffer
