@@ -61,8 +61,14 @@ class UnitreeG1AMPFlatPPORunnerCfg(RslRlOnPolicyRunnerCfg):
             "amp_learning_rate": 1e-4,
             "amp_replay_buffer_size": 200000,
             "amp_num_preload_transitions": 200000,
-            "amp_reward_coef": 0.3,
-            "amp_task_reward_lerp": 0.7,
+            # Style reward coefficient — scale of the discriminator-based
+            # style reward. 0.5 gives style ~50% influence at lerp=0.5,
+            # enough to shape posture without drowning task signal.
+            "amp_reward_coef": 0.5,
+            # Blend ratio: (1-lerp)*style + lerp*task.  0.5 = equal weighting
+            # between AMP style and task reward.  Lowering from 0.7 to give
+            # discriminator more influence over upright posture.
+            "amp_task_reward_lerp": 0.5,
             "amp_disc_gradient_penalty_coef": 10.0,
             "amp_disc_weight_decay": 0.001,
             "amp_disc_head_weight_decay": 0.1,

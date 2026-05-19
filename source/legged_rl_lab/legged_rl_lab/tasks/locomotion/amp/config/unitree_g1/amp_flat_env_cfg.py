@@ -61,6 +61,7 @@ class UnitreeG1AMPFlatEnvCfg(LocomotionAMPRoughEnvCfg):
 
         # ----------------------------- Observations -----------------------------
         self.observations.policy.base_ang_vel.scale = 0.25
+        self.observations.policy.root_local_rot_tan_norm.scale = 1.0
         self.observations.policy.joint_pos.scale = 1.0
         self.observations.policy.joint_vel.scale = 0.05
 
