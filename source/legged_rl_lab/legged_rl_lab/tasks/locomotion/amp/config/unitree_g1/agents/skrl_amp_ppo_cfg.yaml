@@ -56,7 +56,7 @@ models:
 # collect_reference_motions (→ env.collect_reference_motions).
 motion_dataset:
   class: RandomMemory
-  memory_size: -1
+  memory_size: 200000
 
 # AMP replay buffer — stores policy AMP observations to prevent
 # discriminator overfitting.
@@ -79,7 +79,7 @@ agent:
   # [policy, value, discriminator]
   learning_rate: [1.0e-03, 1.0e-03, 1.0e-05]
 
-  learning_rate_scheduler: [KLAdaptiveLR, KLAdaptiveLR, null]
+  learning_rate_scheduler: "[KLAdaptiveLR, KLAdaptiveLR, None]"
   learning_rate_scheduler_kwargs:
     - {kl_threshold: 0.01}
     - {kl_threshold: 0.01}

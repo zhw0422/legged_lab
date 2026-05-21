@@ -48,6 +48,7 @@ parser.add_argument("--export", action="store_true", default=False, help="Export
 parser.add_argument("--real_time", action="store_true", default=False, help="Throttle loop to real-time speed.")
 parser.add_argument("--video", action="store_true", default=False, help="Record a video clip.")
 parser.add_argument("--video_length", type=int, default=200, help="Video length in steps.")
+parser.add_argument("--ckpt", type=str, default=None, help="Name of a checkpoint file under the ckpt/ directory (e.g. 'model.pt').")
 
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
@@ -124,7 +125,12 @@ def main() -> None:
     log_root_path = os.path.abspath(os.path.join("logs", "rsl_rl", agent_cfg.experiment_name))
     print(f"[INFO] Loading experiment from: {log_root_path}")
 
-    if args_cli.checkpoint:
+    if args_cli.ckpt:
+        ckpt_path = os.path.join("ckpt", args_cli.ckpt)
+        if not os.path.exists(ckpt_path):
+            raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
+        resume_path = os.path.abspath(ckpt_path)
+    elif args_cli.checkpoint:
         resume_path = os.path.abspath(args_cli.checkpoint)
     else:
         resume_path = get_checkpoint_path(

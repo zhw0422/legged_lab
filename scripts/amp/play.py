@@ -43,6 +43,7 @@ parser.add_argument(
 )
 parser.add_argument("--seed", type=int, default=None, help="Seed used for the environment.")
 parser.add_argument("--real-time", action="store_true", default=False, help="Run in real-time, if possible.")
+parser.add_argument("--ckpt", type=str, default=None, help="Name of a checkpoint file under the ckpt/ directory (e.g. 'model.pt').")
 # append RSL-RL cli arguments (adds --checkpoint / --load_run etc.)
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args (--headless, --device, etc.)
@@ -110,7 +111,12 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # resolve checkpoint
     log_root_path = os.path.abspath(os.path.join("logs", "rsl_rl", agent_cfg.experiment_name))
     print(f"[INFO] Loading experiment from directory: {log_root_path}")
-    if args_cli.checkpoint:
+    if args_cli.ckpt:
+        ckpt_path = os.path.join("ckpt", args_cli.ckpt)
+        if not os.path.exists(ckpt_path):
+            raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
+        resume_path = os.path.abspath(ckpt_path)
+    elif args_cli.checkpoint:
         resume_path = retrieve_file_path(args_cli.checkpoint)
     else:
         resume_path = get_checkpoint_path(log_root_path, agent_cfg.load_run, agent_cfg.load_checkpoint)

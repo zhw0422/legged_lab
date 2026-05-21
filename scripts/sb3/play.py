@@ -44,6 +44,7 @@ parser.add_argument(
     default=False,
     help="Use a slower SB3 wrapper but keep all the extra training info.",
 )
+parser.add_argument("--ckpt", type=str, default=None, help="Name of a checkpoint file under the ckpt/ directory (e.g. 'model.zip').")
 # append AppLauncher cli args
 AppLauncher.add_app_launcher_args(parser)
 # parse the arguments
@@ -112,6 +113,11 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         if not checkpoint_path:
             print("[INFO] Unfortunately a pre-trained checkpoint is currently unavailable for this task.")
             return
+    elif args_cli.ckpt:
+        ckpt_path = os.path.join("ckpt", args_cli.ckpt)
+        if not os.path.exists(ckpt_path):
+            raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
+        checkpoint_path = os.path.abspath(ckpt_path)
     elif args_cli.checkpoint is None:
         # FIXME: last checkpoint doesn't seem to really use the last one'
         if args_cli.use_last_checkpoint:
