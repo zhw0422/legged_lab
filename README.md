@@ -411,6 +411,18 @@ python scripts/amp/play.py \
     --motion_file source/legged_rl_lab/legged_rl_lab/data/motion/LAFAN1_Retargeting_Dataset/g1/walk1_subject1.npz
 ```
 
+**skrl AMP** (alternative AMP implementation with 3-way discriminator loss):
+
+```bash
+# Train — G1 humanoid, flat terrain, skrl AMP
+python scripts/skrl/train.py \
+    --task LeggedRLLab-Isaac-AMP-Flat-Unitree-G1-skrl-v0 \
+    --algorithm AMP \
+    --num_envs 4096 \
+    --headless \
+    --max_iterations 20000
+```
+
 #### Motion Tracking
 
 [<img src="media/mimic_lafan.gif" width="300px">](gifs/walkrough.gif)

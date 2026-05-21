@@ -144,7 +144,7 @@ class UnitreeG1AMPFlatEnvCfg(LocomotionAMPRoughEnvCfg):
         )
         self.rewards.joint_acc_l2.weight = -1.0e-7
 
-        self.rewards.action_rate_l2.weight = -0.001
+        self.rewards.action_rate_l2.weight = -0.005
 
         # Contact rewards
         self.rewards.feet_air_time.weight = 0.5
@@ -154,10 +154,51 @@ class UnitreeG1AMPFlatEnvCfg(LocomotionAMPRoughEnvCfg):
             "contact_forces", body_names=self.foot_link_name
         )
 
+        # Gait periodic rewards (TienKung-style) — explicit stepping cadence
+        # prior to prevent the robot from just sliding its feet along the floor.
+        # The phase offset (L: 0.38, R: 0.88) encodes an alternating
+        # left/right walking pattern.
+        from isaaclab.managers import RewardTermCfg as RewTerm
+        self.rewards.gait_frc_perio = RewTerm(
+            func=mdp.gait_feet_frc_perio,
+            weight=1.0,
+            params={
+                "sensor_cfg": SceneEntityCfg("contact_forces", body_names=self.foot_link_name),
+                "cycle": 0.85,
+                "offset_l": 0.38,
+                "offset_r": 0.88,
+                "air_ratio": 0.38,
+                "threshold": 500.0,
+            },
+        )
+        self.rewards.gait_spd_perio = RewTerm(
+            func=mdp.gait_feet_spd_perio,
+            weight=1.0,
+            params={
+                "asset_cfg": SceneEntityCfg("robot", body_names=self.foot_link_name),
+                "cycle": 0.85,
+                "offset_l": 0.38,
+                "offset_r": 0.88,
+                "air_ratio": 0.38,
+                "speed_threshold": 1.5,
+            },
+        )
+        self.rewards.gait_support_perio = RewTerm(
+            func=mdp.gait_feet_frc_support_perio,
+            weight=0.6,
+            params={
+                "sensor_cfg": SceneEntityCfg("contact_forces", body_names=self.foot_link_name),
+                "cycle": 0.85,
+                "offset_l": 0.38,
+                "offset_r": 0.88,
+                "air_ratio": 0.38,
+                "threshold": 500.0,
+            },
+        )
+
         # Termination penalty (legged_lab signature reward — single biggest
         # reason their policies don't fall over).  Heavy negative reward each
         # time the episode terminates from anything except time_out.
-        from isaaclab.managers import RewardTermCfg as RewTerm
         self.rewards.termination_penalty = RewTerm(
             func=mdp.is_terminated, weight=-200.0
         )

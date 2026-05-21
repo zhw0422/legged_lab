@@ -23,12 +23,8 @@ class UnitreeG1AMPFlatPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     obs_groups = {"actor": ["policy"], "critic": ["critic"]}
 
     policy = RslRlPpoActorCriticCfg(
-        # TienKung uses scalar init_std=1.0 — gives broad exploration across
-        # all joints.  Our earlier log-std with init=0.3 was too restrictive
-        # and combined with low entropy made the policy collapse locally.
         noise_std_type="scalar",
-        init_noise_std=1.0,
-        # Running mean/var for policy / critic obs — stabilises value training.
+        init_noise_std=0.5,
         actor_obs_normalization=True,
         critic_obs_normalization=True,
         actor_hidden_dims=[512, 256, 128],
@@ -41,9 +37,7 @@ class UnitreeG1AMPFlatPPORunnerCfg(RslRlOnPolicyRunnerCfg):
         value_loss_coef=1.0,
         use_clipped_value_loss=True,
         clip_param=0.2,
-        # TienKung uses 0.005 — enough to keep exploration alive, not so much
-        # that action_std explodes.
-        entropy_coef=0.005,
+        entropy_coef=0.001,
         num_learning_epochs=5,
         num_mini_batches=4,
         learning_rate=1.0e-3,
@@ -61,10 +55,7 @@ class UnitreeG1AMPFlatPPORunnerCfg(RslRlOnPolicyRunnerCfg):
             "amp_learning_rate": 1e-5,
             "amp_replay_buffer_size": 1000000,
             "amp_num_preload_transitions": 200000,
-            # Style reward coefficient — 0.3 matches TienKung reference (lower
-            # means task reward dominates, preventing "freeze for style" failure).
             "amp_reward_coef": 0.3,
-            # Blend ratio: 0.7 = 70% task + 30% style (TienKung default).
             "amp_task_reward_lerp": 0.7,
             "amp_disc_gradient_penalty_coef": 5.0,
             "amp_disc_weight_decay": 0.001,

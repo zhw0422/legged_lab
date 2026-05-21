@@ -13,8 +13,12 @@ Keeping them in one module makes the AMP data flow easier to follow end-to-end.
 
 from __future__ import annotations
 
-import torch
+import os
+
+import numpy as np
 import gymnasium as gym
+import torch
+from gymnasium import spaces
 
 from isaaclab.envs import ManagerBasedRLEnv, ManagerBasedRLEnvCfg
 from rsl_rl.env import VecEnv
@@ -29,6 +33,8 @@ class AMPManagerBasedRLEnv(ManagerBasedRLEnv):
 
     The ``amp_obs_group`` parameter specifies which observation group to treat as the AMP
     observation (default: ``"amp"``).
+
+    Exposes ``amp_observation_space`` and ``collect_reference_motions`` for skrl AMP support.
     """
 
     cfg: ManagerBasedRLEnvCfg
@@ -37,6 +43,75 @@ class AMPManagerBasedRLEnv(ManagerBasedRLEnv):
     def __init__(self, cfg: ManagerBasedRLEnvCfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode=render_mode, **kwargs)
         self._amp_obs_group = "amp"
+
+        # Motion data for AMP (used by both RSL-RL and skrl)
+        self._amp_motion_data: torch.Tensor | None = None
+        """Loaded reference motion AMP features, shape (N, obs_dim)."""
+        self._amp_motion_loader = None
+        """MotionLoader instance for dynamic sampling."""
+        self._load_motion_data()
+
+    # ------------------------------------------------------------------
+    # skrl AMP compatibility
+    # ------------------------------------------------------------------
+
+    @property
+    def amp_observation_space(self) -> spaces.Box:
+        """AMP observation space for skrl agent instantiation.
+
+        Returns a gymnasium Box space matching the AMP observation group's
+        output dimensionality.
+        """
+        # Compute one dummy observation to get the shape
+        amp_obs = self.observation_manager.compute_group(
+            self._amp_obs_group, update_history=False
+        )
+        obs_dim = amp_obs.shape[-1]
+        return spaces.Box(low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32)
+
+    def collect_reference_motions(self, num_samples: int) -> torch.Tensor:
+        """Collect reference motion AMP features for skrl AMP training.
+
+        Samples random frames from the loaded motion data.
+
+        Args:
+            num_samples: Number of reference motion frames to collect.
+
+        Returns:
+            Tensor of shape ``(num_samples, amp_obs_dim)``.
+        """
+        if self._amp_motion_data is None:
+            raise RuntimeError(
+                "No reference motion data loaded. Set amp_motion_files in the env config."
+            )
+        N = self._amp_motion_data.shape[0]
+        idx = torch.randint(0, N, (num_samples,), device=self._amp_motion_data.device)
+        return self._amp_motion_data[idx]
+
+    # ------------------------------------------------------------------
+    # Motion data loading
+    # ------------------------------------------------------------------
+
+    def _load_motion_data(self) -> None:
+        """Load reference motion data for AMP training.
+
+        Reads ``amp_motion_files`` from the config (a file path or directory)
+        and stores the AMP feature tensor for use by ``collect_reference_motions``.
+        """
+        motion_path = getattr(self.cfg, "amp_motion_files", None)
+        if not motion_path or not os.path.exists(motion_path):
+            return
+
+        from legged_rl_lab.managers.motion_loader import MotionLoader
+
+        robot_type = getattr(self.cfg, "robot_type", "g1")
+        loader = MotionLoader(device=str(self.device), robot=robot_type)
+        self._amp_motion_data = loader.load(motion_path)
+        self._amp_motion_loader = loader
+
+    # ------------------------------------------------------------------
+    # Step (AMP-aware)
+    # ------------------------------------------------------------------
 
     def step(self, action: torch.Tensor):
         """Override step to capture AMP observations before reset.

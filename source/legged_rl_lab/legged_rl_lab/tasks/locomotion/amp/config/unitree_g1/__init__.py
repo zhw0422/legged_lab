@@ -20,6 +20,16 @@ gym.register(
 )
 
 gym.register(
+    id="LeggedRLLab-Isaac-AMP-Flat-Unitree-G1-skrl-v0",
+    entry_point="legged_rl_lab.envs:AMPManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.amp_flat_env_cfg:UnitreeG1AMPFlatEnvCfg",
+        "skrl_cfg_entry_point": f"{agents.__name__}:skrl_amp_ppo_cfg.yaml",
+    },
+)
+
+gym.register(
     id="LeggedRLLab-Isaac-AMP-Flat-Unitree-G1-Play-v0",
     entry_point="legged_rl_lab.envs:AMPManagerBasedRLEnv",
     disable_env_checker=True,
