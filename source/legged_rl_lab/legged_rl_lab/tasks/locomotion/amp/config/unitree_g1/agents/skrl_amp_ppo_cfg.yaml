@@ -9,6 +9,11 @@
 
 seed: 42
 
+# PPO rollout memory — stores policy transitions during collection.
+memory:
+  class: RandomMemory
+  memory_size: -1  # auto-set to agent rollouts
+
 models:
   separate: True
 
