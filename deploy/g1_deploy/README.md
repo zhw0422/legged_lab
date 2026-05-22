@@ -6,7 +6,7 @@ Unitree G1 (29 DOF) 强化学习策略部署，支持 Sim2Sim (MuJoCo) 和 Sim2R
 
 ## Sim2Sim (MuJoCo)
 
-在 MuJoCo 中验证策略，使用 GameSir 手柄 (USB) 控制。
+在 MuJoCo 中验证策略，支持 GameSir 手柄 (USB) 或键盘控制。
 
 ### 安装依赖
 
@@ -17,9 +17,22 @@ pip install onnxruntime numpy scipy pyyaml mujoco pygame
 
 ### 启动 — Walk / 速度控制策略
 
+手柄控制：
+
 ```bash
-cd deploy/g1_deploy
-python sim2sim_walk.py --config g1_walk.yaml
+python deploy/g1_deploy/sim2sim_walk.py \
+  --config g1_walk.yaml \
+  --model g1_flat_1.onnx \
+  --input gamepad
+```
+
+键盘控制：
+
+```bash
+python deploy/g1_deploy/sim2sim_walk.py \
+  --config g1_walk.yaml \
+  --model g1_flat_1.onnx \
+  --input keyboard
 ```
 
 ### 启动 — Motion Tracking / 动作模仿策略
@@ -30,9 +43,39 @@ python deploy/g1_deploy/sim2sim_mimic.py --config g1_mimic.yaml
 
 脚本启动时默认加载 **`g1_flat_1.onnx`（flat walk 站立稳定策略）**，待机器人站稳后按 **RB + B** 切换至 tracking 策略开始播放动作。
 
-### GameSir 手柄操作
+### 启动 — AMP 策略
+
+先检查 AMP 配置、ONNX 输入输出维度、MuJoCo 关节/执行器映射：
+
+```bash
+python deploy/g1_deploy/sim2sim_amp.py --check
+```
+
+启动 AMP Sim2Sim：
+
+```bash
+python deploy/g1_deploy/sim2sim_amp.py \
+  --config g1_amp.yaml \
+  --model g1_amp.onnx \
+  --input gamepad
+```
+
+使用键盘控制：
+
+```bash
+python deploy/g1_deploy/sim2sim_amp.py \
+  --config g1_amp.yaml \
+  --model g1_amp.onnx \
+  --input keyboard
+```
+
+`g1_amp.onnx` 当前输入为 **510 维**：`history_length=5`，每帧 `base_ang_vel(3) + projected_gravity(3) + command(3) + joint_pos(29) + joint_vel(29) + last_action(29) + gait_phase(6) = 102`。输出为 **29 维 action**，对应 G1 29DOF。
+
+### 输入控制操作
 
 #### Walk 策略（`sim2sim_walk.py`）
+
+手柄模式：
 
 | 操作           | 功能                       |
 | -------------- | -------------------------- |
@@ -42,6 +85,17 @@ python deploy/g1_deploy/sim2sim_mimic.py --config g1_mimic.yaml
 | **RB + A**     | Walk 策略（主策略）        |
 | **RB + B/X/Y** | Policy 1/2/3（占位符）     |
 | **Start**      | 退出                       |
+
+键盘模式：
+
+| 操作               | 功能                       |
+| ------------------ | -------------------------- |
+| **W/S** 或 上/下键 | vx 增加/减小               |
+| **A/D**            | vy 增加/减小               |
+| **Q/E** 或 左/右键 | vyaw 增加/减小             |
+| **Space** 或 **0** | 速度命令清零               |
+| **1/2/3/4**        | 切换策略                   |
+| **X** 或 **Esc**   | 退出                       |
 
 #### Tracking 策略（`sim2sim_mimic.py`）
 
@@ -54,6 +108,30 @@ python deploy/g1_deploy/sim2sim_mimic.py --config g1_mimic.yaml
 | **Start**    | 退出                                         |
 
 > 切换 policy 时终端会换行并打印 `[PolicySwitch] Active policy: N (tracking/flat)`。
+
+#### AMP 策略（`sim2sim_amp.py`）
+
+手柄模式：
+
+| 操作           | 功能                       |
+| -------------- | -------------------------- |
+| 左摇杆 上/下   | vx 前进/后退               |
+| 左摇杆 左/右   | vy 横移                    |
+| 右摇杆 左/右   | vyaw 转向                  |
+| **RB + A**     | AMP 策略（主策略）         |
+| **RB + B/X/Y** | Policy 1/2/3（占位符）     |
+| **Start**      | 退出                       |
+
+键盘模式：
+
+| 操作               | 功能                       |
+| ------------------ | -------------------------- |
+| **W/S** 或 上/下键 | vx 增加/减小               |
+| **A/D**            | vy 增加/减小               |
+| **Q/E** 或 左/右键 | vyaw 增加/减小             |
+| **Space** 或 **0** | 速度命令清零               |
+| **1/2/3/4**        | 切换策略                   |
+| **X** 或 **Esc**   | 退出                       |
 
 ### 切换 Policy
 
@@ -164,5 +242,3 @@ python sim2real_walk.py
 ##### 4.4 退出控制
 
 在运动控制模式下，按下遥控器上的 Select 按钮，机器人将进入阻尼模式并下落，程序将退出。或者在终端中使用 `Ctrl+C` 关闭程序。
-
-

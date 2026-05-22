@@ -44,6 +44,7 @@ parser.add_argument(
 parser.add_argument("--seed", type=int, default=None, help="Seed used for the environment.")
 parser.add_argument("--real-time", action="store_true", default=False, help="Run in real-time, if possible.")
 parser.add_argument("--ckpt", type=str, default=None, help="Name of a checkpoint file under the ckpt/ directory (e.g. 'model.pt').")
+parser.add_argument("--export_only", action="store_true", default=False, help="Export policy to ONNX and exit.")
 # append RSL-RL cli arguments (adds --checkpoint / --load_run etc.)
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args (--headless, --device, etc.)
@@ -84,7 +85,7 @@ from isaaclab.envs import (
 from isaaclab.utils.assets import retrieve_file_path
 from isaaclab.utils.dict import print_dict
 
-from isaaclab_rl.rsl_rl import RslRlBaseRunnerCfg, export_policy_as_jit, export_policy_as_onnx
+from isaaclab_rl.rsl_rl import RslRlBaseRunnerCfg
 
 import isaaclab_tasks  # noqa: F401
 import legged_rl_lab  # noqa: F401 - Register custom environments
@@ -186,12 +187,13 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         policy_nn = runner.alg.actor
 
     # export policy to jit / onnx for deployment
-    normalizer = None
-    if hasattr(policy_nn, "actor_obs_normalizer"):
-        normalizer = policy_nn.actor_obs_normalizer
     export_model_dir = os.path.join(os.path.dirname(resume_path), "exported")
-    print("Skipped JIT export for custom AMP model.")
-    print("Skipped ONNX export for custom AMP model.")
+    runner.export_policy_to_onnx(export_model_dir, filename="policy.onnx")
+    print(f"[INFO] Exported ONNX policy to: {os.path.join(export_model_dir, 'policy.onnx')}")
+
+    if args_cli.export_only:
+        env.close()
+        return
 
     dt = env.unwrapped_env.step_dt
 

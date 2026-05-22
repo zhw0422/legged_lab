@@ -6,7 +6,7 @@ Sim2Sim (MuJoCo)
 Shared configuration parameters and policy inference logic.
 
 Usage:
-    Simulation: python deploy/g1_deploy/sim2sim_walk.py --mode sim --model policy.pt
+    Simulation: python deploy/g1_deploy/sim2sim_amp.py 
 """
 
 import time
@@ -48,17 +48,14 @@ def compute_projected_gravity(quat):
     projected_gravity = quat_rotate_inverse(quat, gravity_world)
     return projected_gravity
 
-def build_obs(base_ang_vel, projected_gravity, commands, dof_pos_rel, dof_vel, last_action, config):
+def build_obs(base_ang_vel, projected_gravity, commands, dof_pos_rel, dof_vel, last_action, gait_phase, config):
     """
-    Build the observation vector matching IsaacLab velocity_env_cfg.py PolicyCfg (G1 29 DOF):
-    No base_lin_vel in policy obs (only in critic).
-    1-3:   base angular velocity (scaled by base_ang_vel)
-    4-6:   projected gravity
-    7-9:   commands [vx, vy, vyaw]
-    10-38: joint position relative to default (29 DOF)
-    39-67: joint velocities (scaled by joint_vel, 29 DOF)
-    68-96: last actions (29D)
-    Total: 96 dims
+    Build one AMP policy observation frame for G1 29DOF.
+
+    Layout:
+      base_ang_vel(3), projected_gravity(3), commands(3),
+      joint_pos_rel(29), joint_vel(29), last_action(29), gait_phase(6)
+    Total: 102 dims/frame. With history_length=5, the ONNX input is 510 dims.
     """
     obs = []
     
@@ -82,8 +79,36 @@ def build_obs(base_ang_vel, projected_gravity, commands, dof_pos_rel, dof_vel, l
     
     # 37-48: Last action
     obs.extend(list(last_action))
+
+    # Gait phase clock: sin/cos left, sin/cos right, air ratios
+    obs.extend(list(gait_phase))
     
     return np.array(obs, dtype=np.float32)
+
+
+def compute_gait_phase(policy_step, config):
+    """Match mdp.gait_phase_obs used during AMP training."""
+    gait_cycle = getattr(config, "gait_cycle", 0.5)
+    phase_offset_l = getattr(config, "phase_offset_l", 0.0)
+    phase_offset_r = getattr(config, "phase_offset_r", 0.5)
+    air_ratio_l = getattr(config, "air_ratio_l", 0.6)
+    air_ratio_r = getattr(config, "air_ratio_r", 0.6)
+
+    t = policy_step * config.control_dt / gait_cycle
+    phase_l = (t + phase_offset_l) % 1.0
+    phase_r = (t + phase_offset_r) % 1.0
+    two_pi = 2.0 * np.pi
+    return np.array(
+        [
+            np.sin(two_pi * phase_l),
+            np.cos(two_pi * phase_l),
+            np.sin(two_pi * phase_r),
+            np.cos(two_pi * phase_r),
+            air_ratio_l,
+            air_ratio_r,
+        ],
+        dtype=np.float32,
+    )
 
 
 class KeyboardController:
@@ -195,29 +220,7 @@ class Sim2SimController:
         self._base_dir = _base_dir = os.path.dirname(os.path.abspath(__file__))
         self._active_policy_idx = 0  # 0=idle, 1=walk, 2/3/4=other policies
         # 1. 直接加载并解析配置
-        with open(config_path, 'r') as f:
-            raw_cfg = yaml.safe_load(f)
-
-        # 2. 极简配置解析器：处理路径映射和类型转换
-        self.config = SimpleNamespace(**raw_cfg)
-        
-        for k, v in raw_cfg.items():
-            # 自动转换 List 为 Numpy 数组
-            for k, v in raw_cfg.items():
-            # 自动转换 List 为 Numpy 数组
-                if isinstance(v, list):
-                    # --- 关键修改：跳过字符串列表 ---
-                    if k in ['joint_names_mujoco', 'actuator_names_mujoco', 'sdk_joint_order']:
-                        setattr(self.config, k, v) # 保持原样（字符串列表）
-                        continue
-                    
-                    # 只有数字列表才转换成 numpy 数组
-                    try:
-                        v = np.array(v, dtype=np.int32 if 'map' in k else np.float32)
-                    except (ValueError, TypeError):
-                        pass # 如果转换失败（比如列表里混了字符串），保持原样
-                
-                setattr(self.config, k, v)
+        self.config = self._load_config(config_path)
 
         # 3. 基础变量提取
         c = self.config
@@ -242,9 +245,10 @@ class Sim2SimController:
         # 6. 加载 Policy
         print(f"Loading policy: {self.policy_path}")
         self._load_onnx(self.policy_path)
+        self._validate_dimensions(c)
         
         # 7. 初始化缓冲区与增益 (直接从 config 读取)
-        self.obs_history = deque([np.zeros(96, dtype=np.float32)] * c.history_length, maxlen=c.history_length)
+        self.obs_history = self._make_obs_history(c)
         # kps/kds are stored in Isaac order; pd_controller works in MuJoCo order
         self.kp = c.kps[c.isaac_to_mujoco_map]
         self.kd = c.kds[c.isaac_to_mujoco_map]
@@ -261,10 +265,78 @@ class Sim2SimController:
 
         print("Sim2Sim controller initialized")
 
+    def _load_config(self, config_path):
+        with open(config_path, 'r') as f:
+            raw_cfg = yaml.safe_load(f)
+
+        cfg = SimpleNamespace(**raw_cfg)
+        string_list_keys = {'joint_names_mujoco', 'actuator_names_mujoco', 'sdk_joint_order'}
+        for k, v in raw_cfg.items():
+            if isinstance(v, list) and k not in string_list_keys:
+                try:
+                    v = np.array(v, dtype=np.int32 if 'map' in k or 'idx' in k else np.float32)
+                except (ValueError, TypeError):
+                    pass
+            setattr(cfg, k, v)
+        return cfg
+
     def _load_onnx(self, path):
         self.ort_session = ort.InferenceSession(path, providers=['CPUExecutionProvider'])
         self.ort_input_names = [inp.name for inp in self.ort_session.get_inputs()]
         self.ort_output_names = [out.name for out in self.ort_session.get_outputs()]
+        input_shape = self.ort_session.get_inputs()[0].shape
+        output_shape = self.ort_session.get_outputs()[0].shape
+        self.policy_input_dim = int(input_shape[-1]) if isinstance(input_shape[-1], int) else None
+        self.policy_output_dim = int(output_shape[-1]) if isinstance(output_shape[-1], int) else None
+
+    def _frame_obs_dim(self, config):
+        return 3 + 3 + 3 + 3 * self.num_joints + int(getattr(config, "gait_phase_dim", 6))
+
+    def _make_obs_history(self, config):
+        return deque(
+            [np.zeros(self._frame_obs_dim(config), dtype=np.float32)] * int(config.history_length),
+            maxlen=int(config.history_length),
+        )
+
+    def _validate_dimensions(self, config):
+        frame_dim = self._frame_obs_dim(config)
+        expected_obs_dim = frame_dim * int(config.history_length)
+
+        checks = {
+            "kps": len(config.kps),
+            "kds": len(config.kds),
+            "default_joint_pos": len(config.default_joint_pos),
+            "mujoco_to_isaac_map": len(config.mujoco_to_isaac_map),
+            "isaac_to_mujoco_map": len(config.isaac_to_mujoco_map),
+        }
+        for name, size in checks.items():
+            if size != self.num_joints:
+                raise ValueError(f"{name} has {size} entries, expected {self.num_joints}.")
+
+        if int(config.num_actions) != self.num_joints:
+            raise ValueError(f"num_actions={config.num_actions}, expected {self.num_joints}.")
+        if int(config.num_obs) != expected_obs_dim:
+            raise ValueError(f"num_obs={config.num_obs}, expected {expected_obs_dim}.")
+        if self.policy_input_dim is not None and self.policy_input_dim != expected_obs_dim:
+            raise ValueError(f"ONNX input dim={self.policy_input_dim}, expected {expected_obs_dim}.")
+        if self.policy_output_dim is not None and self.policy_output_dim != self.num_joints:
+            raise ValueError(f"ONNX output dim={self.policy_output_dim}, expected {self.num_joints}.")
+
+        if not np.array_equal(config.mujoco_to_isaac_map[config.isaac_to_mujoco_map], np.arange(self.num_joints)):
+            raise ValueError("mujoco_to_isaac_map and isaac_to_mujoco_map are not inverse mappings.")
+
+        for joint_name, actuator_name in zip(config.joint_names_mujoco, config.actuator_names_mujoco):
+            joint_id = self.model.joint(joint_name).id
+            actuator_id = self.model.actuator(actuator_name).id
+            actuator_joint_id = int(self.model.actuator_trnid[actuator_id, 0])
+            if actuator_joint_id != joint_id:
+                raise ValueError(f"Actuator {actuator_name} does not drive joint {joint_name}.")
+
+        print(
+            f"[Check] AMP obs: frame_dim={frame_dim}, history={config.history_length}, "
+            f"onnx_input={self.policy_input_dim}, actions={self.policy_output_dim}"
+        )
+        print(f"[Check] Joint map/gains: {self.num_joints} joints, MuJoCo actuators aligned, maps invertible.")
 
     # -------- 策略热切换 --------
 
@@ -273,20 +345,7 @@ class Sim2SimController:
         print(f"[PolicySwitch] Loading policy {policy_idx}: {config_path} / {model_name}")
         _base_dir = self._base_dir
 
-        with open(config_path, 'r') as f:
-            raw_cfg = yaml.safe_load(f)
-
-        new_cfg = SimpleNamespace(**raw_cfg)
-        for k, v in raw_cfg.items():
-            if isinstance(v, list):
-                if k in ['joint_names_mujoco', 'actuator_names_mujoco', 'sdk_joint_order']:
-                    setattr(new_cfg, k, v)
-                    continue
-                try:
-                    v = np.array(v, dtype=np.int32 if 'map' in k else np.float32)
-                except (ValueError, TypeError):
-                    pass
-            setattr(new_cfg, k, v)
+        new_cfg = self._load_config(config_path)
 
         policy_path = os.path.join(_base_dir, "exported_policy", model_name)
         if not os.path.exists(policy_path):
@@ -296,13 +355,14 @@ class Sim2SimController:
         self.config = new_cfg
         c = new_cfg
         self._load_onnx(policy_path)
+        self._validate_dimensions(c)
         self.policy_decimation = int(c.control_dt / c.sim_dt)
         self.kp = c.kps[c.isaac_to_mujoco_map]
         self.kd = c.kds[c.isaac_to_mujoco_map]
         self.default_qpos_mj = c.default_joint_pos[c.isaac_to_mujoco_map]
         self.target_qpos_mj = self.default_qpos_mj.copy()
         # Reset observation buffers
-        self.obs_history = deque([np.zeros(96, dtype=np.float32)] * self.c.history_length, maxlen=self.c.history_length)
+        self.obs_history = self._make_obs_history(c)
         self.last_action = np.zeros(self.num_joints, dtype=np.float32)
         self._active_policy_idx = policy_idx
         print(f"[PolicySwitch] ✅ Switched to policy {policy_idx}")
@@ -384,17 +444,18 @@ class Sim2SimController:
                     # cmd_vx, cmd_vy, cmd_vyaw = [0.0, 0.0, 0.4]
                     commands = np.array([cmd_vx, cmd_vy, cmd_vyaw], dtype=np.float32)
                         
+                    policy_step = motiontime // self.policy_decimation
+                    gait_phase = compute_gait_phase(policy_step, self.config)
+
                     # Prepare observation for the policy
                     obs = build_obs(base_ang, proj_grav, commands, 
-                                        curr_qpos_rel_isaac, curr_qvel_isaac, self.last_action, self.config)
+                                        curr_qpos_rel_isaac, curr_qvel_isaac, self.last_action, gait_phase, self.config)
                     self.obs_history.append(obs)
                     # Group-major reorganization (matches training format):
-                    # [omega×5, gravity×5, cmd×5, pos×5, vel×5, action×5]
-                    obs_arr = np.array(list(self.obs_history))  # (5, 96)
+                    # [omega x H, gravity x H, cmd x H, pos x H, vel x H, action x H, gait_phase x H]
                     # --- Dynamic Observation Stacking (Compatible with H=1 to N) ---
                     n = self.num_joints
-                    history_len = len(self.obs_history)
-                    obs_arr = np.array(list(self.obs_history))  # Shape: (History, 96)
+                    obs_arr = np.array(list(self.obs_history))
 
                     # Define feature slices [start, end]
                     feature_indices = [
@@ -403,7 +464,8 @@ class Sim2SimController:
                         (6, 9),         # Commands
                         (9, 9 + n),     # Joint positions
                         (9 + n, 9 + 2 * n),   # Joint velocities
-                        (9 + 2 * n, 9 + 3 * n) # Last actions
+                        (9 + 2 * n, 9 + 3 * n), # Last actions
+                        (9 + 3 * n, 9 + 3 * n + int(getattr(self.config, "gait_phase_dim", 6))), # Gait phase
                     ]
 
                     # Extract each feature across all history frames and flatten
@@ -460,10 +522,11 @@ class Sim2SimController:
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--model', type=str, default='g1_flat_1.onnx')
-    parser.add_argument('--config', type=str, default='g1_walk.yaml')
+    parser.add_argument('--model', type=str, default='g1_amp.onnx')
+    parser.add_argument('--config', type=str, default='g1_amp.yaml')
     parser.add_argument('--input', choices=['gamepad', 'keyboard'], default='gamepad', help='Control input device.')
     parser.add_argument('--gamepad_type', type=str, default=None, help='Override gamepad type from YAML.')
+    parser.add_argument('--check', action='store_true', help='Validate config/model dimensions and exit before viewer.')
     args = parser.parse_args()
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -474,22 +537,25 @@ if __name__ == '__main__':
             return name
         return os.path.join(script_dir, 'config', name)
 
-    walk_config = resolve_config(args.config)
+    amp_config = resolve_config(args.config)
 
     # ---- 策略注册表 ----
     # key: gamepad combo index (1=RB+A, 2=RB+B, 3=RB+X, 4=RB+Y)
     # value: (config_yaml_path, policy_model_name)
     # policy1/policy2/policy3 配置文件尚未创建，切换时会自动跳过
     policy_registry = {
-        1: (walk_config,                              args.model),           # RB+A → 行走策略
+        1: (amp_config,                               args.model),           # RB+A → AMP 策略
         2: (resolve_config('policy1.yaml'),           'policy1.onnx'),       # RB+B → 策略 1 (占位符)
         3: (resolve_config('policy2.yaml'),           'policy2.onnx'),       # RB+X → 策略 2 (占位符)
         4: (resolve_config('policy3.yaml'),           'policy3.onnx'),       # RB+Y → 策略 3 (占位符)
     }
 
-    # 1. 初始化 Controller，默认加载行走策略
-    controller = Sim2SimController(walk_config, args.model)
+    # 1. 初始化 Controller，默认加载 AMP 策略
+    controller = Sim2SimController(amp_config, args.model)
     controller._active_policy_idx = 1
+    if args.check:
+        print("[Check] Config/model validation passed.")
+        sys.exit(0)
 
     # 2. 初始化输入设备
     cfg = controller.config
@@ -530,7 +596,7 @@ if __name__ == '__main__':
         print("  Left Joystick Up/Down : vx (forward/back)")
         print("  Left Joystick L/R     : vy (strafe)")
         print("  Right Joystick L/R    : vyaw (turn)")
-        print("  RB + A  : Walk policy  (g1_walk)")
+        print("  RB + A  : AMP policy   (g1_amp)")
         print("  RB + B  : Policy 1     (policy1 - placeholder)")
         print("  RB + X  : Policy 2     (policy2 - placeholder)")
         print("  RB + Y  : Policy 3     (policy3 - placeholder)")
