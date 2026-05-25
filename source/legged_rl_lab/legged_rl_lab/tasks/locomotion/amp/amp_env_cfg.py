@@ -29,6 +29,7 @@ from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR, ISAACLAB_NUCLEUS_DIR
 from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
 
 import legged_rl_lab.tasks.locomotion.amp.mdp as mdp
+from legged_rl_lab.tasks.tracking.mdp.events import randomize_joint_default_pos
 
 ##
 # Pre-defined configs
@@ -105,7 +106,7 @@ class CommandsCfg:
         heading_control_stiffness=0.5,
         debug_vis=True,
         ranges=mdp.UniformVelocityCommandCfg.Ranges(
-            lin_vel_x=(-1.0, 1.0), lin_vel_y=(-1.0, 1.0), ang_vel_z=(-1.0, 1.0), heading=(-math.pi, math.pi)
+            lin_vel_x=(-1.0, 3.0), lin_vel_y=(-1.0, 1.0), ang_vel_z=(-1.0, 1.0), heading=(-math.pi, math.pi)
         ),
     )
 
@@ -226,16 +227,22 @@ class ObservationsCfg:
 
 @configclass
 class EventCfg:
-    """Configuration for events."""
+    """Configuration for events.
 
-    # startup
+    AMP-specific reset strategy: every reset samples a frame from the reference
+    motion (RSI) — no random joint scaling, no default-pose reset. This keeps
+    initial states on the reference manifold so the discriminator does not
+    trivially separate "spawn pose" from real motion.
+    """
+
+    # startup — domain randomization
     physics_material = EventTerm(
         func=mdp.randomize_rigid_body_material,
         mode="startup",
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names=".*"),
-            "static_friction_range": (0.8, 0.8),
-            "dynamic_friction_range": (0.6, 0.6),
+            "static_friction_range": (0.3, 1.2),
+            "dynamic_friction_range": (0.3, 1.0),
             "restitution_range": (0.0, 0.0),
             "num_buckets": 64,
         },
@@ -251,48 +258,53 @@ class EventCfg:
         },
     )
 
-    # reset
-    base_external_force_torque = EventTerm(
-        func=mdp.apply_external_force_torque,
-        mode="reset",
+    base_com = EventTerm(
+        func=mdp.randomize_rigid_body_com,
+        mode="startup",
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names="base"),
-            "force_range": (0.0, 0.0),
-            "torque_range": (-0.0, 0.0),
+            "com_range": {"x": (-0.025, 0.025), "y": (-0.025, 0.025), "z": (-0.03, 0.03)},
         },
     )
 
-    reset_base = EventTerm(
-        func=mdp.reset_root_state_uniform,
+    joint_default_pos = EventTerm(
+        func=randomize_joint_default_pos,
+        mode="startup",
+        params={
+            "asset_cfg": SceneEntityCfg("robot", joint_names=[".*"]),
+            "pos_distribution_params": (-0.015, 0.015),
+            "operation": "add",
+        },
+    )
+
+    # reset — RSI from reference motion (replaces default reset_base / reset_robot_joints)
+    reset_from_motion = EventTerm(
+        func=mdp.reset_from_reference_motion,
         mode="reset",
         params={
-            "pose_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5), "yaw": (-3.14, 3.14)},
-            "velocity_range": {
-                "x": (0.0, 0.0),
-                "y": (0.0, 0.0),
-                "z": (0.0, 0.0),
-                "roll": (0.0, 0.0),
-                "pitch": (0.0, 0.0),
-                "yaw": (0.0, 0.0),
-            },
+            "asset_cfg": SceneEntityCfg("robot"),
+            "height_offset": 0.05,
+            "max_lin_vel_xy": 0.5,
+            "max_ang_vel": 1.0,
+            "min_root_height": 0.65,
         },
     )
 
-    reset_robot_joints = EventTerm(
-        func=mdp.reset_joints_by_scale,
-        mode="reset",
-        params={
-            "position_range": (0.5, 1.5),
-            "velocity_range": (0.0, 0.0),
-        },
-    )
-
-    # interval
+    # interval — perturbations
     push_robot = EventTerm(
         func=mdp.push_by_setting_velocity,
         mode="interval",
-        interval_range_s=(10.0, 15.0),
-        params={"velocity_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5)}},
+        interval_range_s=(1.0, 3.0),
+        params={
+            "velocity_range": {
+                "x": (-1.0, 1.0),
+                "y": (-0.5, 0.5),
+                "z": (-0.4, 0.4),
+                "roll": (-0.52, 0.52),
+                "pitch": (-0.52, 0.52),
+                "yaw": (-0.78, 0.78),
+            },
+        },
     )
 
 

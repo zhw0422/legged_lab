@@ -7,7 +7,6 @@ import math
 import os
 
 from isaaclab.managers import (
-    EventTermCfg as EventTerm,
     RewardTermCfg as RewTerm,
     SceneEntityCfg,
     TerminationTermCfg as DoneTerm,
@@ -112,22 +111,14 @@ class UnitreeG1AMPFlatEnvCfg(LocomotionAMPRoughEnvCfg):
 
         # Events
         self.events.add_base_mass.params["asset_cfg"].body_names = [self.base_link_name]
-        self.events.base_external_force_torque.params["asset_cfg"].body_names = [self.base_link_name]
-        self.events.push_robot = None
+        self.events.base_com.params["asset_cfg"].body_names = [self.base_link_name]
 
-        # events: mdp.reset_from_reference_motion
-        self.events.reset_robot_joints = None
-        self.events.reset_from_ref = EventTerm(
-            func=mdp.reset_from_reference_motion,
-            mode="reset",
-            params={
-                "asset_cfg": SceneEntityCfg("robot"),
-                "height_offset": 0.05,
-                "max_lin_vel_xy": 1.5,
-                "max_ang_vel": 1.5,
-                "min_root_height": 0.60,
-            },
-        )
+        # events: mdp.reset_from_reference_motion (G1-specific tuning of base RSI ranges)
+        self.events.reset_from_motion.params.update({
+            "max_lin_vel_xy": 1.5,
+            "max_ang_vel": 1.5,
+            "min_root_height": 0.60,
+        })
 
         # Rewards
         self.rewards.is_alive.weight = 0.0
@@ -242,6 +233,5 @@ class UnitreeG1AMPFlatEnvCfg_PLAY(UnitreeG1AMPFlatEnvCfg):
 
         # Randomization
         self.observations.policy.enable_corruption = False
-        self.events.base_external_force_torque = None
         self.events.push_robot = None
         self.curriculum.lin_vel_cmd_levels = None

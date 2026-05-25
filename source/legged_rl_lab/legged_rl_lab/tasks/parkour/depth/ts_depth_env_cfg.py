@@ -36,7 +36,7 @@ class TSDepthSceneCfg(InteractiveSceneCfg):
 
 @configclass
 class CommandsCfg:
-    base_velocity = mdp.UniformVelocityCommandCfg(asset_name='robot', resampling_time_range=(10.0, 10.0), rel_standing_envs=0.2, rel_heading_envs=1.0, heading_command=True, heading_control_stiffness=0.5, debug_vis=True, ranges=mdp.UniformVelocityCommandCfg.Ranges(lin_vel_x=(0.0, 1.5), lin_vel_y=(-0.5, 0.5), ang_vel_z=(-1.2, 1.2), heading=(-math.pi, math.pi)))
+    base_velocity = mdp.UniformLevelVelocityCommandCfg(asset_name='robot', resampling_time_range=(10.0, 10.0), rel_standing_envs=0.2, rel_heading_envs=1.0, heading_command=True, heading_control_stiffness=0.5, debug_vis=True, ranges=mdp.UniformVelocityCommandCfg.Ranges(lin_vel_x=(0.0, 1.5), lin_vel_y=(-0.5, 0.5), ang_vel_z=(-1.2, 1.2), heading=(-math.pi, math.pi)), limit_ranges=mdp.UniformVelocityCommandCfg.Ranges(lin_vel_x=(0.0, 1.5), lin_vel_y=(0.0, 0.0), ang_vel_z=(-1.2, 1.2), heading=(-math.pi, math.pi)))
 
 @configclass
 class ActionsCfg:
@@ -60,7 +60,7 @@ class TerminationsCfg:
 @configclass
 class CurriculumCfg:
     terrain_levels = CurrTerm(func=mdp.terrain_levels_vel)
-    lin_vel_cmd_levels = CurrTerm(func=mdp.lin_vel_cmd_levels, params={'reward_term_name': 'tracking_lin_vel', 'lin_vel_x_limit': [0.0, 1.5], 'lin_vel_y_limit': [0.0, 0.0]})
+    lin_vel_cmd_levels = CurrTerm(func=mdp.lin_vel_cmd_levels, params={'reward_term_name': 'tracking_lin_vel'})
 
 @configclass
 class LocomotionTSDepthEnvCfg(ManagerBasedRLEnvCfg):

@@ -171,8 +171,9 @@ class Go2TSDepthEnvCfg(LocomotionTSDepthEnvCfg):
         self.commands.base_velocity.ranges.lin_vel_y = (0.0, 0.0)
         self.commands.base_velocity.ranges.ang_vel_z = (-1.0, 1.0)
         self.commands.base_velocity.ranges.heading = (0.0, 0.0)
-        self.curriculum.lin_vel_cmd_levels.params['lin_vel_x_limit'] = [0.0, 1.5]
-        self.curriculum.lin_vel_cmd_levels.params['lin_vel_y_limit'] = [0.0, 0.0]
+        self.curriculum.lin_vel_cmd_levels.params['reward_term_name'] = 'tracking_lin_vel'
+        self.commands.base_velocity.limit_ranges.lin_vel_x = (0.0, 1.5)
+        self.commands.base_velocity.limit_ranges.lin_vel_y = (0.0, 0.0)
 
 @configclass
 class Go2TSDepthEnvCfg_PLAY(Go2TSDepthEnvCfg):

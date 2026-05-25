@@ -184,8 +184,9 @@ class G1TSDepthEnvCfg(LocomotionTSDepthEnvCfg):
         self.commands.base_velocity.ranges.heading = (0.0, 0.0)
         self.commands.base_velocity.ranges.ang_vel_z = (-0.5, 0.5)
         self.events.reset_base.params['pose_range']['yaw'] = (0.0, 0.0)
-        self.curriculum.lin_vel_cmd_levels.params['lin_vel_x_limit'] = [0.0, 1.0]
-        self.curriculum.lin_vel_cmd_levels.params['lin_vel_y_limit'] = [0.0, 0.0]
+        self.curriculum.lin_vel_cmd_levels.params['reward_term_name'] = 'tracking_lin_vel'
+        self.commands.base_velocity.limit_ranges.lin_vel_x = (0.0, 1.0)
+        self.commands.base_velocity.limit_ranges.lin_vel_y = (0.0, 0.0)
 
 @configclass
 class G1TSDepthEnvCfg_PLAY(G1TSDepthEnvCfg):

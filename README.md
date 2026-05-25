@@ -356,8 +356,6 @@ python scripts/rsl_rl/play.py \
 
 #### Depth
 
-Teacher-student depth policy for parkour locomotion. The task is available for G1 and Go2, and uses the local `legged_rl_lab` robot assets plus the TS-Depth visual RSL-RL runner.
-
 ```bash
 # G1 — Train
 python scripts/rsl_rl/train.py \
