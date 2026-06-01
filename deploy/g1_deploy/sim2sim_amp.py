@@ -48,14 +48,14 @@ def compute_projected_gravity(quat):
     projected_gravity = quat_rotate_inverse(quat, gravity_world)
     return projected_gravity
 
-def build_obs(base_ang_vel, projected_gravity, commands, dof_pos_rel, dof_vel, last_action, gait_phase, config):
+def build_obs(base_ang_vel, projected_gravity, commands, dof_pos_rel, dof_vel, last_action, config):
     """
-    Build one AMP policy observation frame for G1 29DOF.
+    Build one AMP policy observation frame for the current G1 AMP policy.
 
     Layout:
       base_ang_vel(3), projected_gravity(3), commands(3),
-      joint_pos_rel(29), joint_vel(29), last_action(29), gait_phase(6)
-    Total: 102 dims/frame. With history_length=5, the ONNX input is 510 dims.
+      joint_pos_rel(29), joint_vel(29), last_action(29)
+    Total: 96 dims/frame. With history_length=4, the ONNX input is 384 dims.
     """
     obs = []
     
@@ -79,36 +79,8 @@ def build_obs(base_ang_vel, projected_gravity, commands, dof_pos_rel, dof_vel, l
     
     # 37-48: Last action
     obs.extend(list(last_action))
-
-    # Gait phase clock: sin/cos left, sin/cos right, air ratios
-    obs.extend(list(gait_phase))
     
     return np.array(obs, dtype=np.float32)
-
-
-def compute_gait_phase(policy_step, config):
-    """Match mdp.gait_phase_obs used during AMP training."""
-    gait_cycle = getattr(config, "gait_cycle", 0.5)
-    phase_offset_l = getattr(config, "phase_offset_l", 0.0)
-    phase_offset_r = getattr(config, "phase_offset_r", 0.5)
-    air_ratio_l = getattr(config, "air_ratio_l", 0.6)
-    air_ratio_r = getattr(config, "air_ratio_r", 0.6)
-
-    t = policy_step * config.control_dt / gait_cycle
-    phase_l = (t + phase_offset_l) % 1.0
-    phase_r = (t + phase_offset_r) % 1.0
-    two_pi = 2.0 * np.pi
-    return np.array(
-        [
-            np.sin(two_pi * phase_l),
-            np.cos(two_pi * phase_l),
-            np.sin(two_pi * phase_r),
-            np.cos(two_pi * phase_r),
-            air_ratio_l,
-            air_ratio_r,
-        ],
-        dtype=np.float32,
-    )
 
 
 class KeyboardController:
@@ -232,7 +204,7 @@ class Sim2SimController:
         print(f"Loading MuJoCo model: {self.xml_path}")
         self.model = mujoco.MjModel.from_xml_path(self.xml_path)
         self.data = mujoco.MjData(self.model)
-        self.policy_decimation = int(c.control_dt / c.sim_dt)
+        self.policy_decimation = int(round(c.control_dt / c.sim_dt))
         self.sim_dt = c.sim_dt
         
         # 5. 映射关节与执行器索引 (MuJoCo 顺序)
@@ -290,7 +262,7 @@ class Sim2SimController:
         self.policy_output_dim = int(output_shape[-1]) if isinstance(output_shape[-1], int) else None
 
     def _frame_obs_dim(self, config):
-        return 3 + 3 + 3 + 3 * self.num_joints + int(getattr(config, "gait_phase_dim", 6))
+        return 3 + 3 + 3 + 3 * self.num_joints
 
     def _make_obs_history(self, config):
         return deque(
@@ -356,7 +328,7 @@ class Sim2SimController:
         c = new_cfg
         self._load_onnx(policy_path)
         self._validate_dimensions(c)
-        self.policy_decimation = int(c.control_dt / c.sim_dt)
+        self.policy_decimation = int(round(c.control_dt / c.sim_dt))
         self.kp = c.kps[c.isaac_to_mujoco_map]
         self.kd = c.kds[c.isaac_to_mujoco_map]
         self.default_qpos_mj = c.default_joint_pos[c.isaac_to_mujoco_map]
@@ -444,15 +416,12 @@ class Sim2SimController:
                     # cmd_vx, cmd_vy, cmd_vyaw = [0.0, 0.0, 0.4]
                     commands = np.array([cmd_vx, cmd_vy, cmd_vyaw], dtype=np.float32)
                         
-                    policy_step = motiontime // self.policy_decimation
-                    gait_phase = compute_gait_phase(policy_step, self.config)
-
                     # Prepare observation for the policy
                     obs = build_obs(base_ang, proj_grav, commands, 
-                                        curr_qpos_rel_isaac, curr_qvel_isaac, self.last_action, gait_phase, self.config)
+                                        curr_qpos_rel_isaac, curr_qvel_isaac, self.last_action, self.config)
                     self.obs_history.append(obs)
                     # Group-major reorganization (matches training format):
-                    # [omega x H, gravity x H, cmd x H, pos x H, vel x H, action x H, gait_phase x H]
+                    # [omega x H, gravity x H, cmd x H, pos x H, vel x H, action x H]
                     # --- Dynamic Observation Stacking (Compatible with H=1 to N) ---
                     n = self.num_joints
                     obs_arr = np.array(list(self.obs_history))
@@ -465,7 +434,6 @@ class Sim2SimController:
                         (9, 9 + n),     # Joint positions
                         (9 + n, 9 + 2 * n),   # Joint velocities
                         (9 + 2 * n, 9 + 3 * n), # Last actions
-                        (9 + 3 * n, 9 + 3 * n + int(getattr(self.config, "gait_phase_dim", 6))), # Gait phase
                     ]
 
                     # Extract each feature across all history frames and flatten

@@ -115,7 +115,7 @@ class UnitreeG1AMPFlatEnvCfg(LocomotionAMPRoughEnvCfg):
 
         # events: mdp.reset_from_reference_motion (G1-specific tuning of base RSI ranges)
         self.events.reset_from_motion.params.update({
-            "max_lin_vel_xy": 1.5,
+            "max_lin_vel_xy": 3.531,
             "max_ang_vel": 1.5,
             "min_root_height": 0.60,
         })
@@ -276,8 +276,8 @@ class UnitreeG1AMPFlatEnvCfg(LocomotionAMPRoughEnvCfg):
         )
 
         # Commands
-        self.commands.base_velocity.ranges.lin_vel_x = (0.0, 1.0)
-        self.commands.base_velocity.ranges.lin_vel_y = (-0.3, 0.3)
+        self.commands.base_velocity.ranges.lin_vel_x = (-2.693, 3.531)
+        self.commands.base_velocity.ranges.lin_vel_y = (-3.081, 2.902)
         self.commands.base_velocity.ranges.ang_vel_z = (-1.0, 1.0)
 
         # AMP motion data

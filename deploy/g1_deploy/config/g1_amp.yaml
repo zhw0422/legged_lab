@@ -2,12 +2,12 @@ gamepad_type_sim2sim: "gamesir"
 policy_type: amp
 xml_path: "./assets/scene_29dof.xml"
 
-control_dt: 0.02
-sim_dt: 0.005
-control_decimation: 4
+control_dt: 0.03333333333333333
+sim_dt: 0.006666666666666667
+control_decimation: 5
 
 policy_path: "exported_policy/g1_amp.onnx"
-history_length: 5
+history_length: 4
 
 # ========== PD gains (Isaac policy order) ==========
 # kps/kds are in Isaac policy order:
@@ -91,7 +91,7 @@ default_joint_pos: [-0.1, -0.1,  0.0,          # hip_pitch(L,R), waist_yaw
                     0.0,  0.0,  0.0,   0.0]   # wrist_pitch(L,R), wrist_yaw(L,R)
                 
 num_actions: 29
-num_obs: 510
+num_obs: 384
 
 # ========== Observation scales ==========
 ang_vel_scale: 0.25     # base_ang_vel
@@ -101,23 +101,13 @@ dof_vel_scale: 0.05     # joint_vel
 # ========== Action scale ==========
 action_scale: 0.25
 
-# ========== AMP gait phase observation ==========
-# Matches source/legged_rl_lab/.../unitree_g1/amp_flat_env_cfg.py
-gait_phase_dim: 6
-gait_cycle: 0.5
-phase_offset_l: 0.0
-phase_offset_r: 0.5
-air_ratio_l: 0.6
-air_ratio_r: 0.6
-
-
 # Gamepad command multiply scale
 command_scale: [1.0, 1.0, 1.0]
 
 # ========== Command velocity ranges ==========
 command_range:
-  lin_vel_x: [-1.0, 1.0]     # m/s
-  lin_vel_y: [-0.5, 0.5]     # m/s
+  lin_vel_x: [-2.693, 3.531] # m/s, run1_subject2.csv yaw-frame vx min/max
+  lin_vel_y: [-3.081, 2.902] # m/s, run1_subject2.csv yaw-frame vy min/max
   ang_vel_z: [-1.0, 1.0]     # rad/s
 
 
@@ -142,5 +132,3 @@ sdk_joint_order: [
   'left_elbow_joint', 'left_wrist_roll_joint', 'left_wrist_pitch_joint', 'left_wrist_yaw_joint',
   'right_shoulder_pitch_joint', 'right_shoulder_roll_joint', 'right_shoulder_yaw_joint',
   'right_elbow_joint', 'right_wrist_roll_joint', 'right_wrist_pitch_joint', 'right_wrist_yaw_joint']
-
-
