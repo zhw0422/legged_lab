@@ -9,13 +9,15 @@
 """Launch Isaac Sim Simulator first."""
 
 import argparse
+import os
 import numpy as np
 
 from isaaclab.app import AppLauncher
 
 # add argparse arguments
 parser = argparse.ArgumentParser(description="Replay motion from csv file and output to npz file.")
-parser.add_argument("--input_file", "-f", type=str, required=True, help="The path to the input motion csv file.")
+parser.add_argument("--input_file", "-f", type=str, help="The path to the input motion csv file.")
+parser.add_argument("--input_dir", type=str, help="Directory containing input motion csv files for batch conversion.")
 parser.add_argument("--input_fps", type=int, default=60, help="The fps of the input motion.")
 parser.add_argument(
     "--frame_range",
@@ -29,16 +31,47 @@ parser.add_argument(
 )
 parser.add_argument("--output_name", type=str, help="The name of the motion npz file.")
 parser.add_argument("--output_fps", type=int, default=50, help="The fps of the output motion.")
+parser.add_argument("--overwrite", action="store_true", help="Overwrite existing npz files during batch conversion.")
 
 # append AppLauncher cli args
 AppLauncher.add_app_launcher_args(parser)
 # parse the arguments
 args_cli = parser.parse_args()
-if not args_cli.output_name:
-    # generate at the same location as input file
-    args_cli.output_name = (
-        "/".join(args_cli.input_file.split("/")[:-1]) + "/" + args_cli.input_file.split("/")[-1].replace(".csv", ".npz")
-    )
+if args_cli.input_file is None and args_cli.input_dir is None:
+    parser.error("one of --input_file/-f or --input_dir is required")
+if args_cli.input_file is not None and args_cli.input_dir is not None:
+    parser.error("--input_file and --input_dir are mutually exclusive")
+if args_cli.input_dir is not None and args_cli.output_name is not None:
+    parser.error("--output_name can only be used with --input_file")
+
+
+def _default_output_name(input_file: str) -> str:
+    return os.path.splitext(input_file)[0] + ".npz"
+
+
+def _collect_motion_jobs() -> list[tuple[str, str]]:
+    if args_cli.input_file is not None:
+        output_name = args_cli.output_name or _default_output_name(args_cli.input_file)
+        return [(args_cli.input_file, output_name)]
+
+    input_dir = os.path.abspath(args_cli.input_dir)
+    csv_files: list[str] = []
+    for root, _, files in os.walk(input_dir):
+        for filename in sorted(files):
+            if filename.lower().endswith(".csv"):
+                csv_files.append(os.path.join(root, filename))
+
+    if not csv_files:
+        parser.error(f"no csv files found under: {input_dir}")
+
+    jobs: list[tuple[str, str]] = []
+    for csv_file in csv_files:
+        output_name = _default_output_name(csv_file)
+        if os.path.exists(output_name) and not args_cli.overwrite:
+            print(f"[INFO]: Skipping existing npz: {output_name}")
+            continue
+        jobs.append((csv_file, output_name))
+    return jobs
 
 
 # launch omniverse app
@@ -220,96 +253,102 @@ class MotionLoader:
         return state, reset_flag
 
 
-def run_simulator(sim: sim_utils.SimulationContext, scene: InteractiveScene):
+def run_simulator(sim: sim_utils.SimulationContext, scene: InteractiveScene, motion_jobs: list[tuple[str, str]]):
     """Runs the simulation loop."""
-    # Load motion
-    motion = MotionLoader(
-        motion_file=args_cli.input_file,
-        input_fps=args_cli.input_fps,
-        output_fps=args_cli.output_fps,
-        device=sim.device,
-        frame_range=args_cli.frame_range,
-    )
-
     # Extract scene entities
     robot = scene["robot"]
     robot_joint_indexes = robot.find_joints(scene.cfg.robot.joint_sdk_names, preserve_order=True)[0]
 
-    # ------- data logger -------------------------------------------------------
-    log = {
-        "fps": [args_cli.output_fps],
-        "joint_names": list(robot.data.joint_names),
-        "body_names": list(robot.data.body_names),
-        "joint_pos": [],
-        "joint_vel": [],
-        "body_pos_w": [],
-        "body_quat_w": [],
-        "body_lin_vel_w": [],
-        "body_ang_vel_w": [],
-    }
-    file_saved = False
-    # --------------------------------------------------------------------------
+    if not motion_jobs:
+        print("[INFO]: All csv files already have npz outputs. Nothing to convert.")
+        return
 
-    # Simulation loop
-    while simulation_app.is_running():
-        (
+    for job_idx, (motion_file, output_name) in enumerate(motion_jobs, start=1):
+        print(f"[INFO]: Converting ({job_idx}/{len(motion_jobs)}): {motion_file}")
+        motion = MotionLoader(
+            motion_file=motion_file,
+            input_fps=args_cli.input_fps,
+            output_fps=args_cli.output_fps,
+            device=sim.device,
+            frame_range=args_cli.frame_range,
+        )
+
+        # ------- data logger -------------------------------------------------------
+        log = {
+            "fps": [args_cli.output_fps],
+            "joint_names": list(robot.data.joint_names),
+            "body_names": list(robot.data.body_names),
+            "joint_pos": [],
+            "joint_vel": [],
+            "body_pos_w": [],
+            "body_quat_w": [],
+            "body_lin_vel_w": [],
+            "body_ang_vel_w": [],
+        }
+        file_saved = False
+        # --------------------------------------------------------------------------
+
+        # Simulation loop
+        while simulation_app.is_running():
             (
-                motion_base_pos,
-                motion_base_rot,
-                motion_base_lin_vel,
-                motion_base_ang_vel,
-                motion_dof_pos,
-                motion_dof_vel,
-            ),
-            reset_flag,
-        ) = motion.get_next_state()
+                (
+                    motion_base_pos,
+                    motion_base_rot,
+                    motion_base_lin_vel,
+                    motion_base_ang_vel,
+                    motion_dof_pos,
+                    motion_dof_vel,
+                ),
+                reset_flag,
+            ) = motion.get_next_state()
 
-        # set root state
-        root_states = robot.data.default_root_state.clone()
-        root_states[:, :3] = motion_base_pos
-        root_states[:, :2] += scene.env_origins[:, :2]
-        root_states[:, 3:7] = motion_base_rot
-        root_states[:, 7:10] = motion_base_lin_vel
-        root_states[:, 10:] = motion_base_ang_vel
-        robot.write_root_state_to_sim(root_states)
+            # set root state
+            root_states = robot.data.default_root_state.clone()
+            root_states[:, :3] = motion_base_pos
+            root_states[:, :2] += scene.env_origins[:, :2]
+            root_states[:, 3:7] = motion_base_rot
+            root_states[:, 7:10] = motion_base_lin_vel
+            root_states[:, 10:] = motion_base_ang_vel
+            robot.write_root_state_to_sim(root_states)
 
-        # set joint state
-        joint_pos = robot.data.default_joint_pos.clone()
-        joint_vel = robot.data.default_joint_vel.clone()
-        joint_pos[:, robot_joint_indexes] = motion_dof_pos
-        joint_vel[:, robot_joint_indexes] = motion_dof_vel
-        robot.write_joint_state_to_sim(joint_pos, joint_vel)
-        sim.render()  # We don't want physic (sim.step())
-        scene.update(sim.get_physics_dt())
+            # set joint state
+            joint_pos = robot.data.default_joint_pos.clone()
+            joint_vel = robot.data.default_joint_vel.clone()
+            joint_pos[:, robot_joint_indexes] = motion_dof_pos
+            joint_vel[:, robot_joint_indexes] = motion_dof_vel
+            robot.write_joint_state_to_sim(joint_pos, joint_vel)
+            sim.render()  # We don't want physic (sim.step())
+            scene.update(sim.get_physics_dt())
 
-        pos_lookat = root_states[0, :3].cpu().numpy()
-        sim.set_camera_view(pos_lookat + np.array([2.0, 2.0, 0.5]), pos_lookat)
+            pos_lookat = root_states[0, :3].cpu().numpy()
+            sim.set_camera_view(pos_lookat + np.array([2.0, 2.0, 0.5]), pos_lookat)
+
+            if not file_saved:
+                log["joint_pos"].append(robot.data.joint_pos[0, :].cpu().numpy().copy())
+                log["joint_vel"].append(robot.data.joint_vel[0, :].cpu().numpy().copy())
+                log["body_pos_w"].append(robot.data.body_pos_w[0, :].cpu().numpy().copy())
+                log["body_quat_w"].append(robot.data.body_quat_w[0, :].cpu().numpy().copy())
+                log["body_lin_vel_w"].append(robot.data.body_lin_vel_w[0, :].cpu().numpy().copy())
+                log["body_ang_vel_w"].append(robot.data.body_ang_vel_w[0, :].cpu().numpy().copy())
+
+            if reset_flag and not file_saved:
+                file_saved = True
+                for k in (
+                    "joint_pos",
+                    "joint_vel",
+                    "body_pos_w",
+                    "body_quat_w",
+                    "body_lin_vel_w",
+                    "body_ang_vel_w",
+                ):
+                    log[k] = np.stack(log[k], axis=0)
+
+                np.savez(output_name, **log)
+                print("[INFO]: Motion npz file saved to", output_name, flush=True)
+                break
 
         if not file_saved:
-            log["joint_pos"].append(robot.data.joint_pos[0, :].cpu().numpy().copy())
-            log["joint_vel"].append(robot.data.joint_vel[0, :].cpu().numpy().copy())
-            log["body_pos_w"].append(robot.data.body_pos_w[0, :].cpu().numpy().copy())
-            log["body_quat_w"].append(robot.data.body_quat_w[0, :].cpu().numpy().copy())
-            log["body_lin_vel_w"].append(robot.data.body_lin_vel_w[0, :].cpu().numpy().copy())
-            log["body_ang_vel_w"].append(robot.data.body_ang_vel_w[0, :].cpu().numpy().copy())
-
-        if reset_flag and not file_saved:
-            file_saved = True
-            for k in (
-                "joint_pos",
-                "joint_vel",
-                "body_pos_w",
-                "body_quat_w",
-                "body_lin_vel_w",
-                "body_ang_vel_w",
-            ):
-                log[k] = np.stack(log[k], axis=0)
-
-            np.savez(args_cli.output_name, **log)
-            print("[INFO]: Motion npz file saved to", args_cli.output_name)
-            # Exit cleanly after saving — otherwise the sim loop spins forever.
-            simulation_app.close()
-            return
+            raise RuntimeError(f"Failed to save motion npz file: {output_name}")
 
 
 def main():
@@ -326,7 +365,7 @@ def main():
     # Now we are ready!
     print("[INFO]: Setup complete...")
     # Run the simulator
-    run_simulator(sim, scene)
+    run_simulator(sim, scene, _collect_motion_jobs())
 
 
 if __name__ == "__main__":
