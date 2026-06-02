@@ -173,6 +173,13 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             "obs_normalization": policy_cfg.get("critic_obs_normalization", False),
         }
 
+    amp_cfg = agent_dict.get("algorithm", {}).get("amp_cfg")
+    if isinstance(amp_cfg, dict):
+        # Play only needs policy inference; keep AMP training buffers from
+        # consuming most of the GPU before the checkpoint can load.
+        amp_cfg["amp_replay_buffer_size"] = 1
+        amp_cfg["amp_num_preload_transitions"] = 1
+
     runner = OnPolicyRunner(env, agent_dict, log_dir=None, device=agent_cfg.device)
 
     runner.load(resume_path)

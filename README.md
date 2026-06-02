@@ -420,6 +420,20 @@ source/legged_rl_lab/legged_rl_lab/data/motion/
 - LAFAN1 retargeted data: [LAFAN1_Retargeting_Dataset](https://huggingface.co/datasets/lvhaidong/LAFAN1_Retargeting_Dataset)
 - AMASS retargeted data: [AMASS_Retargeted_for_G1](https://huggingface.co/datasets/ember-lab-berkeley/AMASS_Retargeted_for_G1)
 
+```bash
+# Step 1 — Convert retargeted CSV to NPZ (runs FK via Isaac Sim to compute full body states)
+python scripts/csv_to_npz.py \
+  --input_file source/legged_rl_lab/legged_rl_lab/data/motion/LAFAN1_Retargeting_Dataset/g1/walk1_subject1.csv \
+  --input_fps 30 \
+  --headless
+```
+
+```bash
+# Step 2 — (Optional) Replay NPZ in Isaac Sim to verify
+python scripts/replay_npz.py \
+    --file source/legged_rl_lab/legged_rl_lab/data/motion/LAFAN1_Retargeting_Dataset/g1/walk1_subject1.npz
+```
+
 
 <details>
 <summary><b>AMP</b></summary>
@@ -515,19 +529,7 @@ python scripts/skrl/play.py \
 | `Tracking-Flat-G1-Wo-State-Estimation-v0` | No state estimation (closer to real deployment) |
 | `Tracking-Flat-G1-Low-Freq-v0` | Half-frequency control |
 
-```bash
-# Step 1 — Convert retargeted CSV to NPZ (runs FK via Isaac Sim to compute full body states)
-python scripts/csv_to_npz.py \
-  --input_file source/legged_rl_lab/legged_rl_lab/data/motion/LAFAN1_Retargeting_Dataset/g1/walk1_subject1.csv \
-  --input_fps 30 \
-  --headless
-```
 
-```bash
-# Step 2 — (Optional) Replay NPZ in Isaac Sim to verify
-python scripts/replay_npz.py \
-    --file source/legged_rl_lab/legged_rl_lab/data/motion/LAFAN1_Retargeting_Dataset/g1/walk1_subject1.npz
-```
 
 ```bash
 # Step 3 — Train
