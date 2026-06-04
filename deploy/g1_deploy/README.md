@@ -1,23 +1,41 @@
 # G1 Deploy
 
-Unitree G1 (29 DOF) 强化学习策略部署，支持 Sim2Sim (MuJoCo) 和 Sim2Real (真实机器人)。
+Unitree G1 29-DOF policy deployment for Sim2Sim with MuJoCo and Sim2Real on the robot.
 
 ---
 
 ## Sim2Sim (MuJoCo)
 
-在 MuJoCo 中验证策略，支持 GameSir 手柄 (USB) 或键盘控制。
+Use MuJoCo to validate exported policies with either a GameSir USB gamepad or keyboard input.
 
-### 安装依赖
+### Dependencies
 
 ```bash
 conda activate env_isaaclab1
 pip install onnxruntime numpy scipy pyyaml mujoco pygame
 ```
 
-### 启动 — Walk / 速度控制策略
+### Current ONNX Layout
 
-手柄控制：
+`deploy/g1_deploy/exported_policy/` currently contains:
+
+| ONNX | Purpose | Script | Inputs | Outputs |
+| --- | --- | --- | --- | --- |
+| `g1_flat_1.onnx` | Flat walk, standing stabilization, basic velocity control | `sim2sim_walk.py`, startup policy for `sim2sim_mimic.py` | `obs [1, 96]` | `actions [1, 29]` |
+| `g1_walk.onnx` | AMP walk policy | `sim2sim_amp.py` | `obs [1, 384]` | `actions [1, 29]` |
+| `g1_run.onnx` | AMP run policy | `sim2sim_amp.py` | `obs [1, 384]` | `actions [1, 29]` |
+| `g1_dance.onnx` | Motion tracking dance policy | `sim2sim_mimic.py` | `obs [1, 160]`, `time_step [1, 1]` | `actions [1, 29]` plus reference states |
+| `g1_jump.onnx` | Motion tracking jump policy | `sim2sim_mimic.py` | `obs [1, 160]`, `time_step [1, 1]` | `actions [1, 29]` plus reference states |
+
+The current `exported_policy/` folder does not contain `g1_amp.onnx` or `policy.onnx`. Use the model names listed above.
+
+### 1. Walk / Basic Velocity Control
+
+Use `g1_walk.yaml` with `g1_flat_1.onnx`. The policy input is one 96-dimensional observation frame:
+
+`base_ang_vel(3) + projected_gravity(3) + command(3) + joint_pos(29) + joint_vel(29) + last_action(29)`.
+
+Gamepad:
 
 ```bash
 python deploy/g1_deploy/sim2sim_walk.py \
@@ -26,7 +44,7 @@ python deploy/g1_deploy/sim2sim_walk.py \
   --input gamepad
 ```
 
-键盘控制：
+Keyboard:
 
 ```bash
 python deploy/g1_deploy/sim2sim_walk.py \
@@ -35,114 +53,154 @@ python deploy/g1_deploy/sim2sim_walk.py \
   --input keyboard
 ```
 
-### 启动 — Motion Tracking / 动作模仿策略
+### 2. AMP Walk / Run Velocity Policies
 
-```bash
-python deploy/g1_deploy/sim2sim_mimic.py --config g1_mimic.yaml
-```
+Use `g1_amp.yaml` with `g1_walk.onnx` or `g1_run.onnx`. The policy input is 384-dimensional:
 
-脚本启动时默认加载 **`g1_flat_1.onnx`（flat walk 站立稳定策略）**，待机器人站稳后按 **RB + B** 切换至 tracking 策略开始播放动作。
+`history_length=4`, each frame is 96 dimensions, and frames are stacked by feature group before ONNX inference.
 
-### 启动 — AMP 策略
-
-先检查 AMP 配置、ONNX 输入输出维度、MuJoCo 关节/执行器映射：
-
-```bash
-python deploy/g1_deploy/sim2sim_amp.py --check
-```
-
-启动 AMP Sim2Sim：
+Check config, ONNX dimensions, and MuJoCo joint/actuator mapping:
 
 ```bash
 python deploy/g1_deploy/sim2sim_amp.py \
   --config g1_amp.yaml \
-  --model g1_amp.onnx \
+  --model g1_walk.onnx \
+  --check
+```
+
+Run the walk AMP policy:
+
+```bash
+python deploy/g1_deploy/sim2sim_amp.py \
+  --config g1_amp.yaml \
+  --model g1_walk.onnx \
   --input gamepad
 ```
 
-使用键盘控制：
+Run the run AMP policy:
 
 ```bash
 python deploy/g1_deploy/sim2sim_amp.py \
   --config g1_amp.yaml \
-  --model g1_amp.onnx \
+  --model g1_run.onnx \
+  --input gamepad
+```
+
+Keyboard:
+
+```bash
+python deploy/g1_deploy/sim2sim_amp.py \
+  --config g1_amp.yaml \
+  --model g1_walk.onnx \
   --input keyboard
 ```
 
-`g1_amp.onnx` 当前输入为 **510 维**：`history_length=5`，每帧 `base_ang_vel(3) + projected_gravity(3) + command(3) + joint_pos(29) + joint_vel(29) + last_action(29) + gait_phase(6) = 102`。输出为 **29 维 action**，对应 G1 29DOF。
+Gamepad axis debug:
 
-### 输入控制操作
+```bash
+python deploy/g1_deploy/sim2sim_amp.py \
+  --config g1_amp.yaml \
+  --model g1_walk.onnx \
+  --input gamepad \
+  --debug_gamepad
+```
 
-#### Walk 策略（`sim2sim_walk.py`）
+### 3. Motion Tracking / Mimic
 
-手柄模式：
+Use `g1_mimic.yaml` with `g1_dance.onnx` or `g1_jump.onnx`. The tracking ONNX embeds the reference motion clip. It takes the current observation and `time_step`, then outputs actions and reference joint/body states.
 
-| 操作           | 功能                       |
-| -------------- | -------------------------- |
-| 左摇杆 上/下   | vx 前进/后退               |
-| 左摇杆 左/右   | vy 横移                    |
-| 右摇杆 左/右   | vyaw 转向                  |
-| **RB + A**     | Walk 策略（主策略）        |
-| **RB + B/X/Y** | Policy 1/2/3（占位符）     |
-| **Start**      | 退出                       |
+Dance:
 
-键盘模式：
+```bash
+python deploy/g1_deploy/sim2sim_mimic.py \
+  --config g1_mimic.yaml \
+  --model g1_dance.onnx
+```
 
-| 操作               | 功能                       |
-| ------------------ | -------------------------- |
-| **W/S** 或 上/下键 | vx 增加/减小               |
-| **A/D**            | vy 增加/减小               |
-| **Q/E** 或 左/右键 | vyaw 增加/减小             |
-| **Space** 或 **0** | 速度命令清零               |
-| **1/2/3/4**        | 切换策略                   |
-| **X** 或 **Esc**   | 退出                       |
+Jump:
 
-#### Tracking 策略（`sim2sim_mimic.py`）
+```bash
+python deploy/g1_deploy/sim2sim_mimic.py \
+  --config g1_mimic.yaml \
+  --model g1_jump.onnx
+```
 
-| 操作         | 功能                                         |
-| ------------ | -------------------------------------------- |
-| **RB + A**   | 切换至 Flat walk 策略（站立稳定）            |
-| **RB + B**   | 切换至主 Mimic / Tracking 策略（动作播放）   |
-| **RB + X**   | Policy 3（占位符）                           |
-| **RB + Y**   | Policy 4（占位符）                           |
-| **Start**    | 退出                                         |
+`sim2sim_mimic.py` starts with `g1_flat_1.onnx` for standing stabilization. After the robot is stable, press **RB + B** to switch to the tracking policy specified by `--model`.
 
-> 切换 policy 时终端会换行并打印 `[PolicySwitch] Active policy: N (tracking/flat)`。
+### Controls
 
-#### AMP 策略（`sim2sim_amp.py`）
+#### Walk (`sim2sim_walk.py`)
 
-手柄模式：
+Gamepad:
 
-| 操作           | 功能                       |
-| -------------- | -------------------------- |
-| 左摇杆 上/下   | vx 前进/后退               |
-| 左摇杆 左/右   | vy 横移                    |
-| 右摇杆 左/右   | vyaw 转向                  |
-| **RB + A**     | AMP 策略（主策略）         |
-| **RB + B/X/Y** | Policy 1/2/3（占位符）     |
-| **Start**      | 退出                       |
+| Input | Function |
+| --- | --- |
+| Left joystick up/down | `vx` forward/back |
+| Left joystick left/right | `vy` strafe |
+| Right joystick left/right | `vyaw` turn |
+| **RB + A** | Walk policy |
+| **RB + B/X/Y** | Policy slots 1/2/3 placeholders |
+| **Start** | Exit |
 
-键盘模式：
+Keyboard:
 
-| 操作               | 功能                       |
-| ------------------ | -------------------------- |
-| **W/S** 或 上/下键 | vx 增加/减小               |
-| **A/D**            | vy 增加/减小               |
-| **Q/E** 或 左/右键 | vyaw 增加/减小             |
-| **Space** 或 **0** | 速度命令清零               |
-| **1/2/3/4**        | 切换策略                   |
-| **X** 或 **Esc**   | 退出                       |
+| Input | Function |
+| --- | --- |
+| **W/S** or up/down arrows | Increase/decrease `vx` |
+| **A/D** | Increase/decrease `vy` |
+| **Q/E** or left/right arrows | Increase/decrease `vyaw` |
+| **Space** or **0** | Zero velocity command |
+| **1/2/3/4** | Switch policy slot |
+| **X** or **Esc** | Exit |
 
-### 切换 Policy
+#### AMP (`sim2sim_amp.py`)
 
-`policy_registry` 在脚本底部定义，修改对应的 YAML 配置路径和 ONNX 文件名即可注册新的策略：
+Gamepad:
+
+| Input | Function |
+| --- | --- |
+| Left joystick up | `vx` forward. Backward command is disabled in the current `g1_amp.yaml`. |
+| Left joystick left/right | `vy` strafe |
+| Right joystick left/right | `vyaw` turn |
+| **RB + A** | AMP policy |
+| **RB + B/X/Y** | Policy slots 1/2/3 placeholders |
+| **Start** | Exit |
+
+Keyboard:
+
+| Input | Function |
+| --- | --- |
+| **W/S** or up/down arrows | Increase/decrease `vx` |
+| **A/D** | Increase/decrease `vy` |
+| **Q/E** or left/right arrows | Increase/decrease `vyaw` |
+| **Space** or **0** | Zero velocity command |
+| **1/2/3/4** | Switch policy slot |
+| **X** or **Esc** | Exit |
+
+#### Motion Tracking (`sim2sim_mimic.py`)
+
+| Input | Function |
+| --- | --- |
+| **RB + A** | Flat walk stabilization policy |
+| **RB + B** | Main mimic/tracking policy specified by `--model` |
+| **RB + X** | `g1_jump.onnx` |
+| **RB + Y** | `g1_dance.onnx` |
+| **Start** | Exit |
+
+Policy switches are printed in the terminal with messages such as `[PolicySwitch] Active policy: N`.
+
+### Policy Switching
+
+Each Sim2Sim script defines a `policy_registry` near the bottom of the file. Edit the YAML path and ONNX filename there to register new policy slots.
+
+Current tracking registry structure:
 
 ```python
 policy_registry = {
-    1: (flat_config,    'g1_flat_1.onnx'),   # RB+A
-    2: (mimic_config,   'policy.onnx'),      # RB+B
-    3: ('config/g1_mimic_2.yaml', 'policy_2.onnx'),  # RB+X
-    4: ('config/g1_mimic_3.yaml', 'policy_3.onnx'),  # RB+Y
+    1: (flat_config,  'g1_flat_1.onnx'),  # RB+A: stand / stabilize
+    2: (mimic_config, args.model),        # RB+B: main mimic model
+    3: (mimic_config, 'g1_jump.onnx'),    # RB+X
+    4: (mimic_config, 'g1_dance.onnx'),   # RB+Y
 }
 ```
 
@@ -150,14 +208,13 @@ policy_registry = {
 
 ## Sim2Real
 
-
 ### Installation
 
 ```bash
-conda activate legged_rl_lab
+conda activate env_isaaclab1
 cd deploy/g1_deploy
 
-# 1. Install cyclonedds first (required by unitree_sdk2_python)
+# 1. Install Cyclone DDS first. It is required by unitree_sdk2_python.
 git clone https://github.com/eclipse-cyclonedds/cyclonedds -b releases/0.10.x
 cd cyclonedds
 mkdir -p build install
@@ -165,11 +222,10 @@ cd build
 cmake .. -DCMAKE_INSTALL_PREFIX=../install
 cmake --build . --target install -j"$(nproc)"
 
-# 2. 修复 env_isaaclab1 缺失 Python.h
+# 2. Reinstall Python headers if Python.h is missing in env_isaaclab1.
 conda install -n env_isaaclab1 --force-reinstall -y python=3.11.14
 
-
-# 3. Install unitree_sdk2_python
+# 3. Install unitree_sdk2_python.
 cd ../..
 git clone https://github.com/unitreerobotics/unitree_sdk2_python.git
 cd unitree_sdk2_python
@@ -177,68 +233,70 @@ export CYCLONEDDS_HOME=$(pwd)/../cyclonedds/install
 pip install -e .
 ```
 
-
 ### Startup Process
 
 #### 1. Start the robot
-开机，g1进入`零力矩模式`
 
-#### 2. Enter the debugging mode
+Power on the G1 and leave it in zero-torque mode.
 
-![alt text](image.png)
+#### 2. Enter debug mode
 
-按下`L2+R2` G1进入`调试模式`，此时为`阻尼模式`，
+![Debug mode](image.png)
 
-然后可以按下`L2 + A`确认是否进入`调试模式`，最后按下`L2 + R2`回到`阻尼模式`
+Press **L2 + R2** to enter debug mode. The robot should be in damping mode.
 
-> 注意：在调试模式遇到紧急情况，按下`L2 + B`即可进入阻尼模式
+You can press **L2 + A** to confirm debug mode, then press **L2 + R2** again to return to damping mode.
+
+Safety note: in debug mode, press **L2 + B** to enter damping mode immediately.
 
 #### 3. Connect the robot
-用网线连接 PC 与机器人（USB Ethernet 或直连网口）
 
-将 PC 网卡 IP 设置为 `192.168.123.X` 网段，推荐 `192.168.123.99`
+Connect the PC to the robot with Ethernet. A USB Ethernet adapter or a direct Ethernet port both work.
 
-![alt text](image-1.png)
+Set the PC network interface to the `192.168.123.X` subnet. `192.168.123.99` is recommended.
 
-用`ifconfig`查看网口地址
+![Network settings](image-1.png)
 
-![alt text](image-2.png)
+Check the network interface address:
 
-验证连通性：
+![ifconfig output](image-2.png)
+
+Verify connectivity:
 
 ```bash
-ping 192.168.123.161 
+ping 192.168.123.161
 ```
 
-#### 4. Start the Program
+#### 4. Start the program
 
-假设网线连接的网卡名称为 `enp108s0`
+Assume the Ethernet interface is `enp108s0`.
 
 ```bash
 python sim2real_walk.py
 ```
 
+##### 4.1 Zero-torque state
 
+After startup, the robot joints are in zero-torque mode. You can gently move the joints by hand to confirm this state.
 
-##### 4.1 零力矩状态
+##### 4.2 Default-position state
 
-启动后，机器人关节将处于零力矩状态。你可以用手摇动机器人关节来感受和确认。
+In zero-torque mode, press **Start** on the remote controller. The robot moves to the default joint posture.
 
-##### 4.2 默认位置状态
+After the robot reaches the default posture, slowly lower the support rig until the feet touch the ground.
 
-在零力矩状态下，按下遥控器的 Start 按钮，机器人将移动到默认关节位置状态。
+##### 4.3 Motion-control state
 
-机器人移动到默认关节位置后，可以缓慢降低吊装机制，让机器人的脚接触地面。
+After setup is complete, press **A** on the remote controller. The robot starts stepping in place. Once it is stable, gradually lower the support rig and allow limited free motion.
 
-##### 4.3 运动控制模式
+Remote-controller commands:
 
-准备工作完成后，按下遥控器上的 A 按钮，机器人将原地踏步。机器人稳定后，可以逐渐降低吊绳，给机器人一定的活动空间。
+| Input | Function |
+| --- | --- |
+| Left joystick forward/back | X velocity |
+| Left joystick left/right | Y velocity |
+| Right joystick left/right | Yaw velocity |
 
-此时，你可以使用遥控器上的摇杆来控制机器人的运动：
-- **左摇杆前后**：控制机器人 X 方向的运动速度
-- **左摇杆左右**：控制机器人 Y 方向的运动速度
-- **右摇杆左右**：控制机器人偏航角速度
+##### 4.4 Exit control
 
-##### 4.4 退出控制
-
-在运动控制模式下，按下遥控器上的 Select 按钮，机器人将进入阻尼模式并下落，程序将退出。或者在终端中使用 `Ctrl+C` 关闭程序。
+In motion-control mode, press **Select** on the remote controller. The robot enters damping mode, drops safely, and the program exits. You can also stop the program from the terminal with `Ctrl+C`.

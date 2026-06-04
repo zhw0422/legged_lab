@@ -223,9 +223,8 @@ class Sim2SimController:
         debug_interval=1.0,
         debug_joints="all",
     ):
-        #~/legged_rl_lab/deploy/g1_deploy/
         self._base_dir = _base_dir = os.path.dirname(os.path.abspath(__file__))
-        self._active_policy_idx = 0  # 0=idle, 1=walk, 2/3/4=other policies
+        self._active_policy_idx = 0  # 0=idle, 1=AMP, 2/3/4=other policies
         self.debug_policy = debug_policy
         self.debug_interval = max(float(debug_interval), 1.0e-6)
         self.debug_joints = debug_joints
@@ -260,15 +259,15 @@ class Sim2SimController:
         
         # 7. 初始化缓冲区与增益 (直接从 config 读取)
         self.obs_history = self._make_obs_history(c)
-        # kps/kds are stored in Isaac order; pd_controller works in MuJoCo order
+        # kps/kds are stored in policy order; pd_controller works in MuJoCo order
         self.kp = c.kps[c.isaac_to_mujoco_map]
         self.kd = c.kds[c.isaac_to_mujoco_map]
         self.last_action = np.zeros(self.num_joints, dtype=np.float32)
         self._last_tau_mj = np.zeros(self.num_joints, dtype=np.float32)
         self._last_tau_isaac = np.zeros(self.num_joints, dtype=np.float32)
 
-        # 8. 初始姿态对齐 (Isaac -> MuJoCo)
-        # 使用你配置里的 map 数组进行重排
+        # 8. 初始姿态对齐 (policy order -> MuJoCo order)
+        # 使用配置里的 map 数组进行重排
         self.default_qpos_mj = c.default_joint_pos[c.isaac_to_mujoco_map]
         self.target_qpos_mj = self.default_qpos_mj.copy()
 
@@ -482,22 +481,22 @@ class Sim2SimController:
             flush=True,
         )
         print(
-            "[Policy action Isaac] min="
+            "[Policy action policy-order] min="
             f"{action.min():+.4f} max={action.max():+.4f} mean={action.mean():+.4f} "
             f"l2={np.linalg.norm(action):.4f}",
             flush=True,
         )
         print(
-            "[Policy action Isaac raw]\n"
+            "[Policy action policy-order raw]\n"
             f"{np.array2string(action, precision=4, suppress_small=False, max_line_width=160)}",
             flush=True,
         )
         print(
-            "[Policy target_qpos Isaac]\n"
+            "[Policy target_qpos policy-order]\n"
             f"{np.array2string(target_qpos_isaac, precision=4, suppress_small=False, max_line_width=160)}",
             flush=True,
         )
-        print("[Joint table in Isaac order]", flush=True)
+        print("[Joint table in policy order]", flush=True)
         print(" idx name                              q       qd     action   target      err      tau", flush=True)
         for i in indices:
             print(
@@ -619,7 +618,7 @@ class Sim2SimController:
                     self.last_action = action.copy()
                         
                     # Position action: 29 dims (relative to default), scale
-                    # Isaac→MuJoCo: result[mujoco_i] = isaac_arr[isaac_to_mujoco_map[mujoco_i]]
+                    # Policy order -> MuJoCo order.
                     self.target_qpos_isaac = action * self.config.action_scale + c.default_joint_pos
                     self.target_qpos_mj = self.target_qpos_isaac[self.config.isaac_to_mujoco_map]
 
@@ -654,7 +653,7 @@ class Sim2SimController:
             
             
                 
-                # --- Status Telemetry (Original Format) ---
+                # --- Status telemetry ---
                 if motiontime % int(1.0 / self.config.sim_dt) == 0:
                     real_time_now = time.time() - start_time
                     actual_hz = motiontime / real_time_now if real_time_now > 0 else 0
@@ -678,6 +677,8 @@ if __name__ == '__main__':
     parser.add_argument('--check', action='store_true', help='Validate config/model dimensions and exit before viewer.')
     parser.add_argument('--debug_policy', action='store_true', help='Print policy outputs and MuJoCo state periodically.')
     parser.add_argument('--debug_interval', type=float, default=1.0, help='Seconds between --debug_policy prints.')
+    parser.add_argument('--debug_gamepad', action='store_true', help='Print raw gamepad axes and mapped velocity commands.')
+    parser.add_argument('--gamepad_debug_interval', type=float, default=None, help='Seconds between --debug_gamepad prints.')
     parser.add_argument(
         '--debug_joints',
         choices=['all', 'core', 'arms', 'legs'],
@@ -738,6 +739,17 @@ if __name__ == '__main__':
             btn_start=getattr(cfg, 'gamepad_btn_start', None),
             btn_rb=getattr(cfg, 'gamepad_btn_rb', None),
             btn_a=getattr(cfg, 'gamepad_btn_a', None),
+            axis_left_x=getattr(cfg, 'gamepad_axis_left_x', None),
+            axis_left_y=getattr(cfg, 'gamepad_axis_left_y', None),
+            axis_right_x=getattr(cfg, 'gamepad_axis_right_x', None),
+            deadzone=getattr(cfg, 'gamepad_deadzone', 0.05),
+            command_slew_rate=getattr(cfg, 'gamepad_slew_rate', (2.0, 4.0, 3.0)),
+            debug=args.debug_gamepad or bool(getattr(cfg, 'gamepad_debug', False)),
+            debug_interval=(
+                args.gamepad_debug_interval
+                if args.gamepad_debug_interval is not None
+                else getattr(cfg, 'gamepad_debug_interval', 0.5)
+            ),
         )
     try:
         gamepad.start()
@@ -756,7 +768,10 @@ if __name__ == '__main__':
         print("  1/2/3/4            : policy switch")
         print("  X or Esc           : Exit")
     else:
-        print("  Left Joystick Up/Down : vx (forward/back)")
+        if cfg.command_range['lin_vel_x'][0] < 0.0:
+            print("  Left Joystick Up/Down : vx (forward/back)")
+        else:
+            print("  Left Joystick Up      : vx (forward; back disabled by config)")
         print("  Left Joystick L/R     : vy (strafe)")
         print("  Right Joystick L/R    : vyaw (turn)")
         print("  RB + A  : AMP policy   (g1_amp)")
@@ -764,6 +779,7 @@ if __name__ == '__main__':
         print("  RB + X  : Policy 2     (policy2 - placeholder)")
         print("  RB + Y  : Policy 3     (policy3 - placeholder)")
         print("  Start   : Exit")
+        print("  Optional: --debug_gamepad prints raw axes/mapped commands")
     print("="*70 + "\n")
 
     try:

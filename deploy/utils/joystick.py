@@ -100,25 +100,23 @@ class PygameJoystickReader:
     # 轴索引
     AXIS_LEFT_X = 0
     AXIS_LEFT_Y = 1
-    AXIS_RIGHT_X = 2
-    AXIS_RIGHT_Y = 3
-    AXIS_RT = 4
-    AXIS_LT = 5
+    AXIS_LT = 2
+    AXIS_RIGHT_X = 3
+    AXIS_RIGHT_Y = 4
+    AXIS_RT = 5
 
     # 按钮索引
     BTN_A = 0
     BTN_B = 1
-    BTN_X = 3
-    BTN_Y = 4
-    BTN_LB = 6
-    BTN_RB = 7
-    BTN_LT = 8
-    BTN_RT = 9
-    BTN_SELECT = 10
-    BTN_START = 11
-    BTN_HOME = 12
-    BTN_L3 = 13
-    BTN_R3 = 14
+    BTN_X = 2
+    BTN_Y = 3
+    BTN_LB = 4
+    BTN_RB = 5
+    BTN_SELECT = 6
+    BTN_START = 7
+    BTN_HOME = 8
+    BTN_L3 = 9
+    BTN_R3 = 10
 
     def __init__(self):
         import pygame
@@ -133,7 +131,10 @@ class PygameJoystickReader:
         self.js = pygame.joystick.Joystick(0)
         self.js.init()
         print(f"✅ GameSir joystick opened: {self.js.get_name()}")
-        print(f"   Buttons: {self.js.get_numbuttons()}, Axes: {self.js.get_numaxes()}, Hats: {self.js.get_numhats()}")
+        self.num_buttons = self.js.get_numbuttons()
+        self.num_axes = self.js.get_numaxes()
+        self.num_hats = self.js.get_numhats()
+        print(f"   Buttons: {self.num_buttons}, Axes: {self.num_axes}, Hats: {self.num_hats}")
 
         self.running = False
         self.thread = None
@@ -191,7 +192,16 @@ class GamepadController:
     所有手柄实现需要提供统一的 get_velocity() / start() / stop() 接口
     """
 
-    def __init__(self, vx_range=(-2.0, 4.0), vy_range=(-1.0, 1.0), vyaw_range=(-1.57, 1.57)):
+    def __init__(
+        self,
+        vx_range=(-2.0, 4.0),
+        vy_range=(-1.0, 1.0),
+        vyaw_range=(-1.57, 1.57),
+        deadzone=0.05,
+        command_slew_rate=(2.0, 4.0, 3.0),
+        debug=False,
+        debug_interval=0.5,
+    ):
         self.vx = 0.0
         self.vy = 0.0
         self.vyaw = 0.0
@@ -203,8 +213,21 @@ class GamepadController:
         self.exit_requested = False
         self.thread = None
 
-        self.deadzone = 0.05
+        self.deadzone = float(deadzone)
+        if command_slew_rate is None:
+            self.command_slew_rate = np.full(3, np.inf, dtype=np.float32)
+        else:
+            self.command_slew_rate = np.asarray(command_slew_rate, dtype=np.float32)
+            if self.command_slew_rate.size == 1:
+                self.command_slew_rate = np.repeat(self.command_slew_rate, 3)
+            if self.command_slew_rate.shape != (3,):
+                raise ValueError("command_slew_rate must be a scalar or [vx, vy, vyaw].")
+            self.command_slew_rate = np.where(self.command_slew_rate <= 0.0, np.inf, self.command_slew_rate)
+        self.debug = bool(debug)
+        self.debug_interval = max(float(debug_interval), 1.0e-6)
+        self._last_debug_print = 0.0
         self.vx_increment = 0.1
+        self.dpad_vx = 0.0
         self.dpad_last_state = {'up': False, 'down': False}
         self.walk_requested = False  # RB+A 组合触发，进入 walk policy
         # 当前激活的策略索引: 0=空闲, 1=walk(RB+A), 2=policy1(RB+B), 3=policy2(RB+X), 4=policy3(RB+Y)
@@ -219,6 +242,42 @@ class GamepadController:
             self.vx = np.clip(vx, self.vx_range[0], self.vx_range[1])
             self.vy = np.clip(vy, self.vy_range[0], self.vy_range[1])
             self.vyaw = np.clip(vyaw, self.vyaw_range[0], self.vyaw_range[1])
+
+    def set_velocity_smooth(self, vx, vy, vyaw, dt):
+        target = np.array(
+            [
+                np.clip(vx, self.vx_range[0], self.vx_range[1]),
+                np.clip(vy, self.vy_range[0], self.vy_range[1]),
+                np.clip(vyaw, self.vyaw_range[0], self.vyaw_range[1]),
+            ],
+            dtype=np.float32,
+        )
+        with self.lock:
+            current = np.array([self.vx, self.vy, self.vyaw], dtype=np.float32)
+            max_delta = self.command_slew_rate * max(float(dt), 0.0)
+            next_value = current + np.clip(target - current, -max_delta, max_delta)
+            self.vx, self.vy, self.vyaw = map(float, next_value)
+
+    def _print_debug(self, raw_axes, mapped_axes, target_velocity):
+        if not self.debug:
+            return
+        now = time.time()
+        if now - self._last_debug_print < self.debug_interval:
+            return
+        self._last_debug_print = now
+        vx, vy, vyaw = self.get_velocity()
+        raw = np.array(raw_axes, dtype=np.float32)
+        mapped = np.array(mapped_axes, dtype=np.float32)
+        target = np.array(target_velocity, dtype=np.float32)
+        print(
+            "\n[GamepadDebug] raw_axes="
+            f"{np.array2string(raw, precision=3, suppress_small=False)} "
+            "mapped[left_x,left_y,right_x]="
+            f"{np.array2string(mapped, precision=3, suppress_small=False)} "
+            "target[vx,vy,yaw]="
+            f"{np.array2string(target, precision=3, suppress_small=False)} "
+            f"cmd[vx,vy,yaw]=[{vx:+.3f}, {vy:+.3f}, {vyaw:+.3f}]"
+        )
 
     def start(self):
         self.thread = threading.Thread(target=self._control_thread, daemon=True)
@@ -258,8 +317,18 @@ class F710GamepadController(GamepadController):
     BTN_START = 7
 
     def __init__(self, vx_range=(-2.0, 4.0), vy_range=(-1.0, 1.0), vyaw_range=(-1.57, 1.57),
-                 device_path='/dev/input/js0', btn_start=None, btn_rb=None, btn_a=None):
-        super().__init__(vx_range, vy_range, vyaw_range)
+                 device_path='/dev/input/js0', btn_start=None, btn_rb=None, btn_a=None,
+                 axis_left_x=None, axis_left_y=None, axis_right_x=None,
+                 deadzone=0.05, command_slew_rate=(2.0, 4.0, 3.0), debug=False, debug_interval=0.5):
+        super().__init__(
+            vx_range,
+            vy_range,
+            vyaw_range,
+            deadzone=deadzone,
+            command_slew_rate=command_slew_rate,
+            debug=debug,
+            debug_interval=debug_interval,
+        )
         if btn_start is not None: self.BTN_START = btn_start
         if btn_rb   is not None: self.BTN_RB    = btn_rb
         if btn_a    is not None: self.BTN_A     = btn_a
@@ -277,6 +346,7 @@ class F710GamepadController(GamepadController):
             return
 
         update_interval = 1.0 / 33.0
+        last_update = time.time()
 
         while self.running:
             try:
@@ -291,32 +361,38 @@ class F710GamepadController(GamepadController):
                 left_y = apply_deadzone(raw_axes[self.AXIS_LEFT_Y] / 32767.0, self.deadzone)
                 right_x = apply_deadzone(raw_axes[self.AXIS_RIGHT_X] / 32767.0, self.deadzone)
 
+                now = time.time()
+                dt = now - last_update
+                last_update = now
+
                 # D-pad
                 dpad_y = raw_axes[self.AXIS_DPAD_Y] if len(raw_axes) > self.AXIS_DPAD_Y else 0
                 dpad_up = (dpad_y < -16000)
                 dpad_down = (dpad_y > 16000)
 
                 if dpad_up and not self.dpad_last_state['up']:
-                    self.vx = min(self.vx + self.vx_increment, self.vx_range[1])
-                    print(f"\n[D-pad UP] speed step: {self.vx:.1f} m/s")
+                    self.dpad_vx = min(self.dpad_vx + self.vx_increment, self.vx_range[1])
+                    print(f"\n[D-pad UP] speed step: {self.dpad_vx:.1f} m/s")
                 if dpad_down and not self.dpad_last_state['down']:
-                    self.vx = max(self.vx - self.vx_increment, 0.0)
-                    print(f"\n[D-pad DOWN] speed step: {self.vx:.1f} m/s")
+                    self.dpad_vx = max(self.dpad_vx - self.vx_increment, 0.0)
+                    print(f"\n[D-pad DOWN] speed step: {self.dpad_vx:.1f} m/s")
 
                 self.dpad_last_state['up'] = dpad_up
                 self.dpad_last_state['down'] = dpad_down
 
-                # 摇杆映射到速度
+                # 摇杆映射到速度；摇杆回中时回到 D-pad 巡航速度。
+                target_vx = self.dpad_vx
                 if abs(left_y) > 0.1:
                     if left_y <= 0:
-                        self.vx = (-left_y) * self.vx_range[1]
+                        target_vx = (-left_y) * self.vx_range[1]
                     else:
-                        self.vx = (-left_y) * abs(self.vx_range[0])
+                        target_vx = (-left_y) * abs(self.vx_range[0])
 
-                self.vy = -left_x * self.vy_range[1]
-                self.vyaw = -right_x * self.vyaw_range[1]
+                target_vy = -left_x * self.vy_range[1]
+                target_vyaw = -right_x * self.vyaw_range[1]
 
-                self.set_velocity(self.vx, self.vy, self.vyaw)
+                self.set_velocity_smooth(target_vx, target_vy, target_vyaw, dt)
+                self._print_debug(raw_axes, [left_x, left_y, right_x], [target_vx, target_vy, target_vyaw])
 
                 # RB+A 进入 walk policy
                 if (self.BTN_RB < len(raw_buttons) and raw_buttons[self.BTN_RB] and
@@ -353,20 +429,66 @@ class GameSirGamepadController(GamepadController):
 
     轴映射:
       左摇杆: axes[0]=X(-1左,+1右), axes[1]=Y(-1上,+1下)
-      右摇杆: axes[2]=X(-1左,+1右), axes[3]=Y(-1上,+1下)
+      Generic X-Box SDL: axes[2]=LT, axes[3]=右摇杆X, axes[4]=右摇杆Y, axes[5]=RT
     按钮映射:
-      START=11, D-pad 通过 hat 事件 -> 虚拟按钮 15(UP) 16(DOWN)
+      Generic X-Box SDL: START=7, RB=5, D-pad 通过 hat 事件 -> 虚拟按钮 15(UP) 16(DOWN)
     """
 
-    def __init__(self, vx_range=(-2.0, 4.0), vy_range=(-1.0, 1.0), vyaw_range=(-1.57, 1.57)):
-        super().__init__(vx_range, vy_range, vyaw_range)
+    def __init__(
+        self,
+        vx_range=(-2.0, 4.0),
+        vy_range=(-1.0, 1.0),
+        vyaw_range=(-1.57, 1.57),
+        axis_left_x=None,
+        axis_left_y=None,
+        axis_right_x=None,
+        device_path=None,
+        btn_start=None,
+        btn_rb=None,
+        btn_a=None,
+        deadzone=0.05,
+        command_slew_rate=(2.0, 4.0, 3.0),
+        debug=False,
+        debug_interval=0.5,
+    ):
+        super().__init__(
+            vx_range,
+            vy_range,
+            vyaw_range,
+            deadzone=deadzone,
+            command_slew_rate=command_slew_rate,
+            debug=debug,
+            debug_interval=debug_interval,
+        )
         try:
             self.reader = PygameJoystickReader()
             self.reader.start()
+            self.axis_left_x = PygameJoystickReader.AXIS_LEFT_X if axis_left_x is None else int(axis_left_x)
+            self.axis_left_y = PygameJoystickReader.AXIS_LEFT_Y if axis_left_y is None else int(axis_left_y)
+            default_right_x = PygameJoystickReader.AXIS_RIGHT_X if self.reader.num_axes > 3 else 2
+            self.axis_right_x = default_right_x if axis_right_x is None else int(axis_right_x)
+            self.btn_start = PygameJoystickReader.BTN_START if btn_start is None else int(btn_start)
+            self.btn_rb = PygameJoystickReader.BTN_RB if btn_rb is None else int(btn_rb)
+            self.btn_a = PygameJoystickReader.BTN_A if btn_a is None else int(btn_a)
             print("✅ GameSir Gamepad initialized")
+            print(
+                "   Mapping: "
+                f"LX axis {self.axis_left_x}, LY axis {self.axis_left_y}, RX axis {self.axis_right_x}, "
+                f"RB button {self.btn_rb}, A button {self.btn_a}, Start button {self.btn_start}"
+            )
         except Exception as e:
             print(f"❌ GameSir init failed: {e}")
             self.reader = None
+
+    @staticmethod
+    def _axis(raw_axes, axis_index):
+        if axis_index is None or axis_index < 0 or axis_index >= len(raw_axes):
+            return 0.0
+        return raw_axes[axis_index]
+
+    @staticmethod
+    def _button(buttons, button_index):
+        return 0 <= button_index < len(buttons) and bool(buttons[button_index])
 
     def _control_thread(self):
         if self.reader is None:
@@ -374,6 +496,7 @@ class GameSirGamepadController(GamepadController):
             return
 
         update_interval = 1.0 / 33.0
+        last_update = time.time()
         _prev_combos = {1: False, 2: False, 3: False, 4: False}
 
         while self.running:
@@ -382,10 +505,15 @@ class GameSirGamepadController(GamepadController):
 
                 with self.reader.lock:
                     # pygame axes 已经是 [-1, 1]
-                    left_x = self.reader.axes[0]
-                    left_y = self.reader.axes[1]
-                    right_x = self.reader.axes[2]
+                    raw_axes = list(self.reader.axes)
+                    left_x = self._axis(raw_axes, self.axis_left_x)
+                    left_y = self._axis(raw_axes, self.axis_left_y)
+                    right_x = self._axis(raw_axes, self.axis_right_x)
                     buttons = list(self.reader.buttons)
+
+                now = time.time()
+                dt = now - last_update
+                last_update = now
 
                 left_x = apply_deadzone(left_x, self.deadzone)
                 left_y = apply_deadzone(left_y, self.deadzone)
@@ -396,34 +524,36 @@ class GameSirGamepadController(GamepadController):
                 dpad_down = bool(buttons[16])
 
                 if dpad_up and not self.dpad_last_state['up']:
-                    self.vx = min(self.vx + self.vx_increment, self.vx_range[1])
-                    print(f"\n[D-pad UP] speed step: {self.vx:.1f} m/s")
+                    self.dpad_vx = min(self.dpad_vx + self.vx_increment, self.vx_range[1])
+                    print(f"\n[D-pad UP] speed step: {self.dpad_vx:.1f} m/s")
                 if dpad_down and not self.dpad_last_state['down']:
-                    self.vx = max(self.vx - self.vx_increment, 0.0)
-                    print(f"\n[D-pad DOWN] speed step: {self.vx:.1f} m/s")
+                    self.dpad_vx = max(self.dpad_vx - self.vx_increment, 0.0)
+                    print(f"\n[D-pad DOWN] speed step: {self.dpad_vx:.1f} m/s")
 
                 self.dpad_last_state['up'] = dpad_up
                 self.dpad_last_state['down'] = dpad_down
 
-                # 左摇杆: 前后左右速度
+                # 左摇杆: 前后左右速度；摇杆回中时回到 D-pad 巡航速度。
                 # Y轴: 向上(-1) -> vx正(前进), 向下(+1) -> vx负(后退)
+                target_vx = self.dpad_vx
                 if abs(left_y) > 0.1:
                     if left_y <= 0:
-                        self.vx = (-left_y) * self.vx_range[1]
+                        target_vx = (-left_y) * self.vx_range[1]
                     else:
-                        self.vx = (-left_y) * abs(self.vx_range[0])
+                        target_vx = (-left_y) * abs(self.vx_range[0])
                 # X轴: 向左(-1) -> vy正(左移), 向右(+1) -> vy负(右移)
-                self.vy = -left_x * self.vy_range[1]
+                target_vy = -left_x * self.vy_range[1]
 
                 # 右摇杆: yaw 速度
-                self.vyaw = -right_x * self.vyaw_range[1]
+                target_vyaw = -right_x * self.vyaw_range[1]
 
-                self.set_velocity(self.vx, self.vy, self.vyaw)
+                self.set_velocity_smooth(target_vx, target_vy, target_vyaw, dt)
+                self._print_debug(raw_axes, [left_x, left_y, right_x], [target_vx, target_vy, target_vyaw])
 
                 # RB + 面键 组合 → 策略切换 (上升沿触发)
-                rb = bool(buttons[PygameJoystickReader.BTN_RB])
+                rb = self._button(buttons, self.btn_rb)
                 combos = {
-                    1: rb and bool(buttons[PygameJoystickReader.BTN_A]),
+                    1: rb and self._button(buttons, self.btn_a),
                     2: rb and bool(buttons[PygameJoystickReader.BTN_B]),
                     3: rb and bool(buttons[PygameJoystickReader.BTN_X]),
                     4: rb and bool(buttons[PygameJoystickReader.BTN_Y]),
@@ -438,8 +568,8 @@ class GameSirGamepadController(GamepadController):
                         print(f"\n✅ [{combo_names[idx]}] activated!")
                 _prev_combos = dict(combos)
 
-                # START 按钮 (index 11) 退出
-                if buttons[PygameJoystickReader.BTN_START]:
+                # START 按钮退出
+                if self._button(buttons, self.btn_start):
                     print("\n✅ Start button pressed - exiting")
                     self.exit_requested = True
                     break
@@ -470,7 +600,10 @@ GAMEPAD_TYPES = {
 
 def create_gamepad_controller(gamepad_type, vx_range=(-2.0, 4.0), vy_range=(-1.0, 1.0),
                               vyaw_range=(-1.57, 1.57), device_path='/dev/input/js0',
-                              btn_start=None, btn_rb=None, btn_a=None):
+                              btn_start=None, btn_rb=None, btn_a=None,
+                              axis_left_x=None, axis_left_y=None, axis_right_x=None,
+                              deadzone=0.05, command_slew_rate=(2.0, 4.0, 3.0),
+                              debug=False, debug_interval=0.5):
     """
     根据手柄类型创建对应的控制器（当前仅支持 GameSir）
 
@@ -489,7 +622,22 @@ def create_gamepad_controller(gamepad_type, vx_range=(-2.0, 4.0), vy_range=(-1.0
         raise ValueError(f"不支持的手柄类型: '{gamepad_type}', 可选: {list(GAMEPAD_TYPES.keys())}")
 
     cls = GAMEPAD_TYPES[gamepad_type]
-    return cls(vx_range=vx_range, vy_range=vy_range, vyaw_range=vyaw_range)
+    return cls(
+        vx_range=vx_range,
+        vy_range=vy_range,
+        vyaw_range=vyaw_range,
+        device_path=device_path,
+        btn_start=btn_start,
+        btn_rb=btn_rb,
+        btn_a=btn_a,
+        axis_left_x=axis_left_x,
+        axis_left_y=axis_left_y,
+        axis_right_x=axis_right_x,
+        deadzone=deadzone,
+        command_slew_rate=command_slew_rate,
+        debug=debug,
+        debug_interval=debug_interval,
+    )
 
 
 # ============================================================================

@@ -9,8 +9,8 @@ control_decimation: 5
 policy_path: "exported_policy/g1_amp.onnx"
 history_length: 4
 
-# ========== PD gains (Isaac policy order) ==========
-# kps/kds are in Isaac policy order:
+# ========== PD gains (policy joint order) ==========
+# kps/kds are in policy joint order:
 # [ 0] L/R hip_pitch, waist_yaw
 # [ 3] L/R hip_roll,  waist_roll
 # [ 6] L/R hip_yaw,   waist_pitch
@@ -69,8 +69,8 @@ actuator_names_mujoco: [
 mujoco_to_isaac_map: [0, 6, 12, 1, 7, 13, 2, 8, 14, 3, 9, 15, 22, 4, 10, 16, 23, 5, 11, 17, 24, 18, 25, 19, 26, 20, 27, 21, 28]
 isaac_to_mujoco_map: [0, 3, 6, 9, 13, 17, 1, 4, 7, 10, 14, 18, 2, 5, 8, 11, 15, 19, 21, 23, 25, 27, 12, 16, 20, 22, 24, 26, 28]
 
-# ========== Default Standing Joint Angles (Isaac Training Order) ==========
-# Isaac training order:
+# ========== Default standing joint angles (policy joint order) ==========
+# Policy joint order:
 #  [ 0] left_hip_pitch   [ 1] right_hip_pitch  [ 2] waist_yaw
 #  [ 3] left_hip_roll    [ 4] right_hip_roll   [ 5] waist_roll
 #  [ 6] left_hip_yaw     [ 7] right_hip_yaw    [ 8] waist_pitch
@@ -99,7 +99,7 @@ dof_pos_scale: 1.0      # joint_pos
 dof_vel_scale: 0.05     # joint_vel
 
 # ========== Action scale ==========
-# Isaac training order. Arms are intentionally smaller to keep shoulder roll from
+# Policy joint order. Arms are intentionally smaller to keep shoulder roll from
 # driving the hands into the hips when the policy output saturates.
 action_scale: [0.25, 0.25, 0.25,          # hip_pitch(L,R), waist_yaw
                0.25, 0.25, 0.25,          # hip_roll(L,R),  waist_roll
@@ -114,10 +114,20 @@ action_scale: [0.25, 0.25, 0.25,          # hip_pitch(L,R), waist_yaw
 # Gamepad command multiply scale
 command_scale: [1.0, 1.0, 1.0]
 
+# pygame "Generic X-Box pad" axis mapping:
+# axes[0]=left_x, axes[1]=left_y, axes[2]=LT, axes[3]=right_x, axes[4]=right_y, axes[5]=RT
+gamepad_axis_left_x: 0
+gamepad_axis_left_y: 1
+gamepad_axis_right_x: 3
+gamepad_deadzone: 0.05
+# Max command acceleration [vx m/s^2, vy m/s^2, vyaw rad/s^2].
+# This lets the policy ramp up even if the physical stick is pushed to max instantly.
+gamepad_slew_rate: [2.0, 4.0, 3.0]
+
 # ========== Command velocity ranges ==========
 command_range:
-  lin_vel_x: [0.0, 2.5]      # m/s, forward-only; 2.5 keeps commands inside the current run-data distribution
-  lin_vel_y: [-3.081, 2.902] # m/s, run1_subject2.csv yaw-frame vy min/max
+  lin_vel_x: [0.0, 2.5]      # m/s, forward-only command range
+  lin_vel_y: [-3.081, 2.902] # m/s, lateral command range
   ang_vel_z: [-1.0, 1.0]     # rad/s
 
 

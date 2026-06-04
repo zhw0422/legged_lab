@@ -404,7 +404,7 @@ python scripts/rsl_rl/export_ts_depth_policy.py \
 
 #### Datasets
 
-Place the following datasets in the corresponding directories:
+Place motion datasets under the project motion directory:
 
 ```
 source/legged_rl_lab/legged_rl_lab/data/motion/
@@ -420,18 +420,34 @@ source/legged_rl_lab/legged_rl_lab/data/motion/
 - LAFAN1 retargeted data: [LAFAN1_Retargeting_Dataset](https://huggingface.co/datasets/lvhaidong/LAFAN1_Retargeting_Dataset)
 - AMASS retargeted data: [AMASS_Retargeted_for_G1](https://huggingface.co/datasets/ember-lab-berkeley/AMASS_Retargeted_for_G1)
 
+LAFAN1 is stored as retargeted `.csv`, so convert it to `.npz` before AMP or tracking training.
+
 ```bash
-# Step 1 — Convert retargeted CSV to NPZ (runs FK via Isaac Sim to compute full body states)
+# Convert one CSV.
 python scripts/csv_to_npz.py \
   --input_file source/legged_rl_lab/legged_rl_lab/data/motion/LAFAN1_Retargeting_Dataset/g1/walk1_subject1.csv \
   --input_fps 30 \
+  --output_fps 30 \
   --headless
 ```
 
 ```bash
-# Step 2 — (Optional) Replay NPZ in Isaac Sim to verify
+# Or batch-convert every CSV under the G1 LAFAN1 folder.
+# Remove --overwrite if you want to keep existing NPZ files.
+python scripts/csv_to_npz.py \
+  --input_dir source/legged_rl_lab/legged_rl_lab/data/motion/LAFAN1_Retargeting_Dataset/g1 \
+  --input_fps 30 \
+  --output_fps 30 \
+  --headless \
+  --overwrite
+```
+
+For AMP locomotion training, put the converted LAFAN1 `run*.npz` and `walk*.npz` files into `source/legged_rl_lab/legged_rl_lab/data/motion/LAFAN1_Retargeting_Dataset/g1_amp_run_walk_fall_getup/`.
+
+```bash
+# Optional: replay one converted NPZ in Isaac Sim to verify the body state.
 python scripts/replay_npz.py \
-    --file source/legged_rl_lab/legged_rl_lab/data/motion/LAFAN1_Retargeting_Dataset/g1/walk1_subject1.npz
+  --file source/legged_rl_lab/legged_rl_lab/data/motion/LAFAN1_Retargeting_Dataset/g1_amp_run_walk_fall_getup/walk1_subject1.npz
 ```
 
 
@@ -440,7 +456,7 @@ python scripts/replay_npz.py \
 
 ```bash
 # Train — G1 humanoid, flat terrain, AMP + RSI
-# Default expert motion: a single validated walk clip
+# Default expert motion: LAFAN1_Retargeting_Dataset/g1/walk1_subject1.npz
 python scripts/amp/train.py \
     --task LeggedRLLab-Isaac-AMP-Flat-Unitree-G1-v0 \
     --num_envs 4096 \
@@ -454,8 +470,7 @@ python scripts/amp/train.py \
     --motion_file source/legged_rl_lab/legged_rl_lab/data/motion/LAFAN1_Retargeting_Dataset/g1/walk1_subject1.npz
 
 # Train on a directory of motions
-# The loader scans the directory recursively, so keep this folder clean and
-# prefer a walk-only NPZ subset instead of mixing old / incompatible files.
+# Use the folder containing converted LAFAN1 run/walk NPZ files.
 python scripts/amp/train.py \
   --task LeggedRLLab-Isaac-AMP-Flat-Unitree-G1-v0 \
   --motion_file source/legged_rl_lab/legged_rl_lab/data/motion/LAFAN1_Retargeting_Dataset/g1_amp_run_walk_fall_getup \
@@ -476,7 +491,7 @@ python scripts/amp/train.py \
 python scripts/amp/play.py \
     --task LeggedRLLab-Isaac-AMP-Flat-Unitree-G1-Play-v0 \
     --num_envs 50 \
-    --motion_file source/legged_rl_lab/legged_rl_lab/data/motion/LAFAN1_Retargeting_Dataset/g1_amp_run_walk_fall_getup \
+    --motion_file source/legged_rl_lab/legged_rl_lab/data/motion/LAFAN1_Retargeting_Dataset/g1_amp_run_walk_fall_getup
 ```
 
 **skrl AMP** (alternative AMP implementation with 3-way discriminator loss):
