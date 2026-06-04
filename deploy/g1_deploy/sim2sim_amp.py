@@ -48,6 +48,34 @@ def compute_projected_gravity(quat):
     projected_gravity = quat_rotate_inverse(quat, gravity_world)
     return projected_gravity
 
+
+def quat_wxyz_to_euler_xyz(q):
+    """Convert MuJoCo root quaternion [w, x, y, z] to roll/pitch/yaw."""
+    w, x, y, z = q / np.linalg.norm(q)
+
+    sinr_cosp = 2.0 * (w * x + y * z)
+    cosr_cosp = 1.0 - 2.0 * (x * x + y * y)
+    roll = np.arctan2(sinr_cosp, cosr_cosp)
+
+    sinp = 2.0 * (w * y - z * x)
+    pitch = np.arcsin(np.clip(sinp, -1.0, 1.0))
+
+    siny_cosp = 2.0 * (w * z + x * y)
+    cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
+    yaw = np.arctan2(siny_cosp, cosy_cosp)
+    return np.array([roll, pitch, yaw], dtype=np.float32)
+
+
+def rotate_world_to_yaw_frame(yaw, vec):
+    """Rotate a world-frame vector into the root yaw frame."""
+    c = np.cos(yaw)
+    s = np.sin(yaw)
+    return np.array([
+        c * vec[0] + s * vec[1],
+        -s * vec[0] + c * vec[1],
+        vec[2],
+    ], dtype=np.float32)
+
 def build_obs(base_ang_vel, projected_gravity, commands, dof_pos_rel, dof_vel, last_action, config):
     """
     Build one AMP policy observation frame for the current G1 AMP policy.
@@ -187,10 +215,21 @@ class KeyboardController:
 class Sim2SimController:
     """MuJoCo simulation controller."""
     
-    def __init__(self, config_path, model_name):
+    def __init__(
+        self,
+        config_path,
+        model_name,
+        debug_policy=False,
+        debug_interval=1.0,
+        debug_joints="all",
+    ):
         #~/legged_rl_lab/deploy/g1_deploy/
         self._base_dir = _base_dir = os.path.dirname(os.path.abspath(__file__))
         self._active_policy_idx = 0  # 0=idle, 1=walk, 2/3/4=other policies
+        self.debug_policy = debug_policy
+        self.debug_interval = max(float(debug_interval), 1.0e-6)
+        self.debug_joints = debug_joints
+        self._last_debug_print_time = -np.inf
         # 1. 直接加载并解析配置
         self.config = self._load_config(config_path)
 
@@ -225,6 +264,8 @@ class Sim2SimController:
         self.kp = c.kps[c.isaac_to_mujoco_map]
         self.kd = c.kds[c.isaac_to_mujoco_map]
         self.last_action = np.zeros(self.num_joints, dtype=np.float32)
+        self._last_tau_mj = np.zeros(self.num_joints, dtype=np.float32)
+        self._last_tau_isaac = np.zeros(self.num_joints, dtype=np.float32)
 
         # 8. 初始姿态对齐 (Isaac -> MuJoCo)
         # 使用你配置里的 map 数组进行重排
@@ -289,6 +330,15 @@ class Sim2SimController:
             raise ValueError(f"num_actions={config.num_actions}, expected {self.num_joints}.")
         if int(config.num_obs) != expected_obs_dim:
             raise ValueError(f"num_obs={config.num_obs}, expected {expected_obs_dim}.")
+
+        action_scale = np.asarray(config.action_scale, dtype=np.float32)
+        if action_scale.ndim == 0:
+            config.action_scale = np.full(self.num_joints, float(action_scale), dtype=np.float32)
+        elif action_scale.shape == (self.num_joints,):
+            config.action_scale = action_scale
+        else:
+            raise ValueError(f"action_scale has shape {action_scale.shape}, expected scalar or ({self.num_joints},).")
+
         if self.policy_input_dim is not None and self.policy_input_dim != expected_obs_dim:
             raise ValueError(f"ONNX input dim={self.policy_input_dim}, expected {expected_obs_dim}.")
         if self.policy_output_dim is not None and self.policy_output_dim != self.num_joints:
@@ -308,7 +358,10 @@ class Sim2SimController:
             f"[Check] AMP obs: frame_dim={frame_dim}, history={config.history_length}, "
             f"onnx_input={self.policy_input_dim}, actions={self.policy_output_dim}"
         )
-        print(f"[Check] Joint map/gains: {self.num_joints} joints, MuJoCo actuators aligned, maps invertible.")
+        print(
+            f"[Check] Joint map/gains: {self.num_joints} joints, MuJoCo actuators aligned, maps invertible. "
+            f"action_scale=[{config.action_scale.min():.3f}, {config.action_scale.max():.3f}]"
+        )
 
     # -------- 策略热切换 --------
 
@@ -345,7 +398,116 @@ class Sim2SimController:
         tau = kp * (target_q - current_q) - kd * current_v
         """         
         tau = self.kp * (target_pos_mj - self.data.qpos[self.joint_qpos_addrs]) + self.kd * (target_vel_mj - self.data.qvel[self.joint_qvel_addrs])
+        self._last_tau_mj = tau.astype(np.float32).copy()
+        self._last_tau_isaac = self._last_tau_mj[self.config.mujoco_to_isaac_map]
         self.data.ctrl[self.actuator_ids] = tau
+
+    def _joint_names_isaac(self):
+        return [self.config.joint_names_mujoco[int(i)] for i in self.config.mujoco_to_isaac_map]
+
+    def _debug_joint_indices(self):
+        names = self._joint_names_isaac()
+        if self.debug_joints == "all":
+            return list(range(self.num_joints))
+        if self.debug_joints == "arms":
+            keys = ("shoulder", "elbow", "wrist")
+        elif self.debug_joints == "legs":
+            keys = ("hip", "knee", "ankle")
+        else:
+            keys = ("hip", "knee", "ankle", "waist", "shoulder")
+        return [i for i, name in enumerate(names) if any(k in name for k in keys)]
+
+    def _print_policy_debug(
+        self,
+        sim_time,
+        motiontime,
+        commands,
+        base_ang,
+        proj_grav,
+        curr_qpos_isaac,
+        curr_qvel_isaac,
+        obs,
+        obs_input,
+        action,
+        target_qpos_isaac,
+    ):
+        root_pos = self.data.qpos[:3].copy()
+        root_quat = self.data.qpos[3:7].copy()
+        root_rpy = quat_wxyz_to_euler_xyz(root_quat)
+        root_lin_vel = self.data.qvel[:3].copy()
+        root_ang_vel = self.data.qvel[3:6].copy()
+        root_lin_vel_yaw = rotate_world_to_yaw_frame(root_rpy[2], root_lin_vel)
+
+        target_err = target_qpos_isaac - curr_qpos_isaac
+        names = self._joint_names_isaac()
+        indices = self._debug_joint_indices()
+
+        print("\n" + "=" * 118, flush=True)
+        print(f"[PolicyDebug] sim_t={sim_time:.3f}s step={motiontime} policy_dt={self.config.control_dt:.4f}s", flush=True)
+        print(
+            "[PolicyDebug] command[vx vy yaw]="
+            f"{np.array2string(commands, precision=3, suppress_small=False)}",
+            flush=True,
+        )
+        print(
+            "[MuJoCo root] pos(xyz)="
+            f"{np.array2string(root_pos, precision=4, suppress_small=False)} "
+            "quat(wxyz)="
+            f"{np.array2string(root_quat, precision=4, suppress_small=False)}",
+            flush=True,
+        )
+        print(
+            "[MuJoCo root] rpy(rad)="
+            f"{np.array2string(root_rpy, precision=4, suppress_small=False)} "
+            "lin_vel_raw="
+            f"{np.array2string(root_lin_vel, precision=4, suppress_small=False)} "
+            "lin_vel_yaw="
+            f"{np.array2string(root_lin_vel_yaw, precision=4, suppress_small=False)} "
+            "ang_vel_raw="
+            f"{np.array2string(root_ang_vel, precision=4, suppress_small=False)}",
+            flush=True,
+        )
+        print(
+            "[Obs newest] base_ang_raw="
+            f"{np.array2string(base_ang, precision=4, suppress_small=False)} "
+            "projected_gravity="
+            f"{np.array2string(proj_grav, precision=4, suppress_small=False)}",
+            flush=True,
+        )
+        print(
+            "[Obs input] shape="
+            f"{obs_input.shape} min={obs_input.min():+.4f} max={obs_input.max():+.4f} "
+            f"mean={obs_input.mean():+.4f} l2={np.linalg.norm(obs_input):.4f} "
+            f"nan={np.isnan(obs_input).any()} inf={np.isinf(obs_input).any()}",
+            flush=True,
+        )
+        print(
+            "[Policy action Isaac] min="
+            f"{action.min():+.4f} max={action.max():+.4f} mean={action.mean():+.4f} "
+            f"l2={np.linalg.norm(action):.4f}",
+            flush=True,
+        )
+        print(
+            "[Policy action Isaac raw]\n"
+            f"{np.array2string(action, precision=4, suppress_small=False, max_line_width=160)}",
+            flush=True,
+        )
+        print(
+            "[Policy target_qpos Isaac]\n"
+            f"{np.array2string(target_qpos_isaac, precision=4, suppress_small=False, max_line_width=160)}",
+            flush=True,
+        )
+        print("[Joint table in Isaac order]", flush=True)
+        print(" idx name                              q       qd     action   target      err      tau", flush=True)
+        for i in indices:
+            print(
+                f"{i:>3d} {names[i]:<30s} "
+                f"{curr_qpos_isaac[i]:+7.3f} {curr_qvel_isaac[i]:+7.3f} "
+                f"{action[i]:+8.3f} {target_qpos_isaac[i]:+8.3f} "
+                f"{target_err[i]:+8.3f} {self._last_tau_isaac[i]:+8.2f}",
+                flush=True,
+            )
+        print("=" * 118 + "\n", flush=True)
     
     def run(self, gamepad, policy_registry=None):
         """
@@ -409,7 +571,8 @@ class Sim2SimController:
                     curr_qpos_mj = self.data.qpos[self.joint_qpos_addrs]
                     curr_qvel_mj = self.data.qvel[self.joint_qvel_addrs]
                     
-                    curr_qpos_rel_isaac = curr_qpos_mj[c.mujoco_to_isaac_map] - c.default_joint_pos
+                    curr_qpos_isaac = curr_qpos_mj[c.mujoco_to_isaac_map]
+                    curr_qpos_rel_isaac = curr_qpos_isaac - c.default_joint_pos
                     curr_qvel_isaac = curr_qvel_mj[c.mujoco_to_isaac_map]
                     # Get user input from gamepad
                     cmd_vx, cmd_vy, cmd_vyaw = gamepad.get_velocity()
@@ -459,6 +622,24 @@ class Sim2SimController:
                     # Isaac→MuJoCo: result[mujoco_i] = isaac_arr[isaac_to_mujoco_map[mujoco_i]]
                     self.target_qpos_isaac = action * self.config.action_scale + c.default_joint_pos
                     self.target_qpos_mj = self.target_qpos_isaac[self.config.isaac_to_mujoco_map]
+
+                    if self.debug_policy and sim_time - self._last_debug_print_time >= self.debug_interval:
+                        tau_preview_mj = self.kp * (self.target_qpos_mj - curr_qpos_mj) - self.kd * curr_qvel_mj
+                        self._last_tau_isaac = tau_preview_mj[c.mujoco_to_isaac_map].astype(np.float32)
+                        self._print_policy_debug(
+                            sim_time=sim_time,
+                            motiontime=motiontime,
+                            commands=commands,
+                            base_ang=base_ang,
+                            proj_grav=proj_grav,
+                            curr_qpos_isaac=curr_qpos_isaac,
+                            curr_qvel_isaac=curr_qvel_isaac,
+                            obs=obs,
+                            obs_input=obs_input,
+                            action=action,
+                            target_qpos_isaac=self.target_qpos_isaac,
+                        )
+                        self._last_debug_print_time = sim_time
                 
                 # --- 摄像头跟随机器人 ---
                 viewer.cam.lookat[:] = self.data.qpos[:3]
@@ -495,6 +676,14 @@ if __name__ == '__main__':
     parser.add_argument('--input', choices=['gamepad', 'keyboard'], default='gamepad', help='Control input device.')
     parser.add_argument('--gamepad_type', type=str, default=None, help='Override gamepad type from YAML.')
     parser.add_argument('--check', action='store_true', help='Validate config/model dimensions and exit before viewer.')
+    parser.add_argument('--debug_policy', action='store_true', help='Print policy outputs and MuJoCo state periodically.')
+    parser.add_argument('--debug_interval', type=float, default=1.0, help='Seconds between --debug_policy prints.')
+    parser.add_argument(
+        '--debug_joints',
+        choices=['all', 'core', 'arms', 'legs'],
+        default='all',
+        help='Joint subset printed by --debug_policy.',
+    )
     args = parser.parse_args()
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -519,7 +708,13 @@ if __name__ == '__main__':
     }
 
     # 1. 初始化 Controller，默认加载 AMP 策略
-    controller = Sim2SimController(amp_config, args.model)
+    controller = Sim2SimController(
+        amp_config,
+        args.model,
+        debug_policy=args.debug_policy,
+        debug_interval=args.debug_interval,
+        debug_joints=args.debug_joints,
+    )
     controller._active_policy_idx = 1
     if args.check:
         print("[Check] Config/model validation passed.")

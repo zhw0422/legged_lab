@@ -99,14 +99,24 @@ dof_pos_scale: 1.0      # joint_pos
 dof_vel_scale: 0.05     # joint_vel
 
 # ========== Action scale ==========
-action_scale: 0.25
+# Isaac training order. Arms are intentionally smaller to keep shoulder roll from
+# driving the hands into the hips when the policy output saturates.
+action_scale: [0.25, 0.25, 0.25,          # hip_pitch(L,R), waist_yaw
+               0.25, 0.25, 0.25,          # hip_roll(L,R),  waist_roll
+               0.25, 0.25, 0.25,          # hip_yaw(L,R),   waist_pitch
+               0.25, 0.25, 0.08, 0.08,    # knee(L,R),      shoulder_pitch(L,R)
+               0.25, 0.25, 0.08, 0.08,    # ankle_pitch(L,R), shoulder_roll(L,R)
+               0.25, 0.25, 0.08, 0.08,    # ankle_roll(L,R),  shoulder_yaw(L,R)
+               0.08, 0.08,                # elbow(L,R)
+               0.05, 0.05, 0.05, 0.05,    # wrist_roll(L,R), wrist_pitch(L,R)
+               0.05, 0.05]                # wrist_yaw(L,R)
 
 # Gamepad command multiply scale
 command_scale: [1.0, 1.0, 1.0]
 
 # ========== Command velocity ranges ==========
 command_range:
-  lin_vel_x: [-2.693, 3.531] # m/s, run1_subject2.csv yaw-frame vx min/max
+  lin_vel_x: [0.0, 2.5]      # m/s, forward-only; 2.5 keeps commands inside the current run-data distribution
   lin_vel_y: [-3.081, 2.902] # m/s, run1_subject2.csv yaw-frame vy min/max
   ang_vel_z: [-1.0, 1.0]     # rad/s
 

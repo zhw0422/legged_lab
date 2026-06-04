@@ -100,6 +100,50 @@ def body_ang_vel_xy_l2(
     return torch.exp(-ang_vel_error / std**2)
 
 
+def body_upright_orientation(
+    env: "ManagerBasedRLEnv",
+    std: float,
+    body_cfg: SceneEntityCfg = SceneEntityCfg("robot", body_names=()),
+    mask_delay: bool = False,
+    delay_env_rew_ratio: float = 0.0,
+) -> torch.Tensor:
+    """Reward selected bodies for staying upright in world frame."""
+    del mask_delay, delay_env_rew_ratio
+    asset = env.scene[body_cfg.name]
+    body_ids, _ = asset.find_bodies(body_cfg.body_names, preserve_order=True)
+
+    body_quat_w = asset.data.body_quat_w[:, body_ids, :]
+    gravity_w = asset.data.GRAVITY_VEC_W[:, None, :].expand(-1, len(body_ids), -1)
+    gravity_b = math_utils.quat_apply_inverse(
+        body_quat_w.reshape(-1, 4),
+        gravity_w.reshape(-1, 3),
+    ).reshape(env.num_envs, len(body_ids), 3)
+
+    tilt_error = torch.sum(torch.square(gravity_b[..., :2]), dim=(1, 2))
+    return torch.exp(-tilt_error / std**2)
+
+
+def body_pair_distance_violation(
+    env: "ManagerBasedRLEnv",
+    source_cfg: SceneEntityCfg,
+    target_cfg: SceneEntityCfg,
+    min_distance: float,
+    mask_delay: bool = False,
+    delay_env_rew_ratio: float = 0.0,
+) -> torch.Tensor:
+    """Penalize selected body pairs when their origins get too close."""
+    del mask_delay, delay_env_rew_ratio
+    asset = env.scene[source_cfg.name]
+    source_ids, _ = asset.find_bodies(source_cfg.body_names, preserve_order=True)
+    target_ids, _ = asset.find_bodies(target_cfg.body_names, preserve_order=True)
+
+    source_pos = asset.data.body_pos_w[:, source_ids, :]
+    target_pos = asset.data.body_pos_w[:, target_ids, :]
+    pair_dist = torch.linalg.norm(source_pos[:, :, None, :] - target_pos[:, None, :, :], dim=-1)
+    violation = torch.clamp(min_distance - pair_dist, min=0.0)
+    return torch.sum(torch.square(violation), dim=(1, 2))
+
+
 def feet_slide(
     env: "ManagerBasedRLEnv",
     sensor_cfg: SceneEntityCfg = SceneEntityCfg("contact_forces"),
