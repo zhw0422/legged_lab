@@ -34,8 +34,8 @@ class RslRlTsDepthAlgorithmCfg(RslRlPpoAlgorithmCfg):
 @configclass
 class RslRlAttentionActorCriticCfg(RslRlPpoActorCriticCfg):
     class_name: str = "AttentionTerrainModel"
-    map_scan_dim: tuple[int, int, int] = (17, 11, 3)
-    mha_dim: int = 32
-    num_heads: int = 4
+    map_scan_dim: tuple[int, int, int] = (33, 21, 3)
+    mha_dim: int = 64
+    num_heads: int = 16
     cnn_downsample: bool = True
     attach_global: bool = False

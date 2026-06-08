@@ -222,8 +222,7 @@ def concentric_gap_terrain(difficulty: float, cfg: ame_hf_terrains_cfg.HfConcent
     Generate concentric gap terrain with a center platform.
     Gap width is difficulty-dependent and gap depth is fixed.
     """
-    # Gap depth in pixels
-    gap_depth = int(2.0 / cfg.vertical_scale)
+    gap_depth = int(abs(cfg.gap_depth) / cfg.vertical_scale)
     # Gap width varies with difficulty
     gap_width = cfg.gap_width_range[0] + difficulty * (cfg.gap_width_range[1] - cfg.gap_width_range[0])
     gap_width = int(gap_width / cfg.horizontal_scale)

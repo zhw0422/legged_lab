@@ -419,7 +419,7 @@ python scripts/rsl_rl/export_ts_depth_policy.py \
 
 #### AME Attention
 
-This task uses an AME-style CNN + multi-head attention encoder over a 17x11x3 local terrain map. Training uses a reduced parkour terrain set with up/down stairs and AME custom stakes, concentric gaps, and stone bridge obstacles; default rough boxes, random rough, and slopes are not used by this attention task. Play uses the AME single-stakes obstacle layout. It is a normal PPO task, separate from the TS-Depth teacher/student runner.
+This task uses an AME-style CNN + multi-head attention encoder over a 33x21x3 local terrain map, matching the AME paper-style resolution. Training uses the full-size AME parkour terrain preset: 10x20 terrain curriculum, 8m x 8m tiles, 50m border, 0.05m horizontal scale, up/down stairs, AME stakes, concentric gaps, stone bridge, and rails. Play keeps a smaller curated obstacle layout for inspection. It is a normal PPO task, separate from the TS-Depth teacher/student runner.
 
 ```bash
 # G1 — train AME attention parkour
