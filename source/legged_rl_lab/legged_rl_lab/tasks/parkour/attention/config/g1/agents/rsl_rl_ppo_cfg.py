@@ -9,7 +9,7 @@ from legged_rl_lab.tasks.parkour.attention.attention_env_cfg import ATTENTION_MA
 class G1AttentionPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     class_name = "OnPolicyRunner"
     num_steps_per_env = 24
-    max_iterations = 10000
+    max_iterations = 100000
     save_interval = 500
     experiment_name = "g1_parkour_attention"
     obs_groups = ATTENTION_OBS_GROUPS
