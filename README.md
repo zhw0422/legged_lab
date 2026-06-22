@@ -436,7 +436,7 @@ python scripts/rsl_rl/play.py \
 # Go2 — train AME attention parkour
 python scripts/rsl_rl/train.py \
   --task LeggedRLLab-Isaac-Parkour-Attention-Unitree-Go2-v0 \
-  --num_envs 256 \
+  --num_envs  \
   --headless
 
 # Go2 — play
