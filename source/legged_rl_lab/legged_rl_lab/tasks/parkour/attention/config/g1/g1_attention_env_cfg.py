@@ -278,11 +278,11 @@ class G1AttentionRewardsCfg(AttentionRewardsCfg):
     )
     tracking_ang_vel = RewTerm(
         func=mdp.track_ang_vel_z_world_exp,
-        weight=2.0,
+        weight=3.0,
         params={"command_name": "base_velocity", "std": 0.25},
     )
     # -- penalties
-    ang_vel_xy_l2 = RewTerm(func=mdp.ang_vel_xy_l2, weight=-0.05)
+    ang_vel_xy_l2 = RewTerm(func=mdp.ang_vel_xy_l2, weight=-0.1)
     collision = RewTerm(
         func=mdp.undesired_contacts,
         weight=-1.0,

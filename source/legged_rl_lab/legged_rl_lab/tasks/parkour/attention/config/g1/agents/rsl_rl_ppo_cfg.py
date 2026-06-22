@@ -15,7 +15,7 @@ class G1AttentionPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     obs_groups = ATTENTION_OBS_GROUPS
     policy = RslRlAttentionActorCriticCfg(
         class_name="AttentionTerrainModel",
-        init_noise_std=1.0,
+        init_noise_std=0.8,
         noise_std_type="scalar",
         actor_obs_normalization=False,
         critic_obs_normalization=False,
@@ -33,7 +33,7 @@ class G1AttentionPPORunnerCfg(RslRlOnPolicyRunnerCfg):
         value_loss_coef=1.0,
         use_clipped_value_loss=True,
         clip_param=0.2,
-        entropy_coef=0.01,
+        entropy_coef=0.005,
         num_learning_epochs=5,
         num_mini_batches=4,
         learning_rate=1.0e-3,
