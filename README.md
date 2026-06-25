@@ -18,8 +18,6 @@ conda create -n legged_rl_lab python=3.11
 conda activate legged_rl_lab
 pip install -U torch==2.7.0 torchvision==0.22.0 --index-url https://download.pytorch.org/whl/cu128
 pip install --upgrade pip
-pip install "setuptools<81" wheel
-pip install --no-build-isolation flatdict==4.0.1
 ```
 
 * Install isaacsim 5.1 and isaaclab 2.3
@@ -419,20 +417,102 @@ python scripts/rsl_rl/export_ts_depth_policy.py \
 <details>
 <summary><b>Attention</b></summary>
 
-#### AME Attention 
+#### AME Attention — Overview
 
+CNN + Multi-Head Attention encoder over a 33×21×3 local terrain map (1.6m × 1.0m at 0.05m resolution).
 
-#### 训练（Train）
+- **CNN**: 2-layer (3→16→64), stride=2 downsampling
+- **MHA**: 16 heads, embed_dim=64, Query=proprioceptive embedding, Key/Value=CNN features
+- **Actor/Critic MLP**: [512, 256, 128], ELU activation
+- **PPO**: `entropy_coef=0.008`, `init_noise_std=1.0`, `lr=1e-3` adaptive schedule
+
+---
+
+#### Train — 10×20 curriculum terrain
+
+8 terrain types matching AME `ROUGH_TERRAINS_CFG`: stairs up/down (10%+10%), boxes (10%), random rough (10%), slopes (10%+10%), stepping stones (20%), concentric gaps (20%).
 
 ```bash
-# 从头训练 — G1 attention parkour
+# Train from scratch
 python scripts/rsl_rl/train.py \
   --task LeggedRLLab-Isaac-Parkour-Attention-Unitree-G1-v0 \
   --num_envs 2048 \
   --headless \
   --logger tensorboard
 
-# 从 checkpoint 恢复训练
+# Resume from checkpoint
+python scripts/rsl_rl/train.py \
+  --task LeggedRLLab-Isaac-Parkour-Attention-Unitree-G1-v0 \
+  --num_envs 2048 \
+  --headless \
+  --logger tensorboard \
+  --resume \
+  --load_run 2026-06-18_18-15-43 \
+  --checkpoint model_57500.pt \
+  --run_name my_run
+
+# Multi-GPU
+CUDA_VISIBLE_DEVICES=0,1,2,3 python -m torch.distributed.run \
+  --nproc_per_node=4 --master_port=54321 \
+  scripts/rsl_rl/train.py \
+  --task LeggedRLLab-Isaac-Parkour-Attention-Unitree-G1-v0 \
+  --num_envs 4096 --headless --logger tensorboard
+```
+
+| CLI arg | Description | Default |
+|---------|-------------|---------|
+| `--num_envs` | Parallel envs | 512 |
+| `--max_iterations` | Max training iters | 100000 |
+| `--logger` | `wandb`, `tensorboard`, or `neptune` | `wandb` |
+| `--resume` | Resume from checkpoint | off |
+| `--load_run` | Run folder name to resume from | — |
+| `--checkpoint` | Checkpoint file name | — |
+| `--run_name` | Suffix for the new run folder | — |
+
+> **Note:** Use `--logger tensorboard` in headless mode without a wandb API key.
+
+---
+
+#### Finetune — Stake-focused training
+
+Set `FINETUNE = True` in `g1_attention_env_cfg.py`. Matches AME `FINETUNE_ROUGH_TERRAINS_CFG` exactly.
+
+**1. Terrain mix (8 types, 100% total):**
+
+| Terrain | Prop. | Description |
+|---------|-------|-------------|
+| pyramid_stairs | 10% | Stairs up (0.05–0.25m) |
+| pyramid_stairs_inv | 10% | Stairs down (0.05–0.25m) |
+| stakes1 (double) | 10% | Double column, fixed gap 0.1m |
+| stakes2 (alternate) | 20% | Alternate column, gap 0.0–0.2m |
+| stakes3 (alternate) | 20% | Alternate column, gap 0.3–0.2m |
+| hf_gaps | 10% | Concentric gaps (0.2–0.6m) |
+| stones_bridge | 10% | Stone bridge |
+| rails | 10% | Rails (0.25→0.05m) |
+
+**2. Reward weight changes:**
+
+| Reward | Regular | Finetune | Change |
+|--------|---------|----------|--------|
+| tracking_lin_vel | 2.0 | 2.0 | — |
+| dof_torques_limits | -0.01 | **-0.05** | ×5 |
+| action_rate_l2 | -0.01 | **-0.05** | ×5 |
+| flat_orientation | -2.0 | **-5.0** | ×2.5 |
+| feet_air_time | 0.25 | **0.5** | ×2 |
+| feet_air_time_variance | -0.1 | **-2.0** | ×20 |
+| feet_slide | -0.1 | **-0.3** | ×3 |
+| feet_stumble | -1.0 | **-5.0** | ×5 |
+| feet_too_near | -1.0 | **-5.0** | ×5 |
+| joint_coordination | -0.2 | **-0.5** | ×2.5 |
+
+**3. Randomization disabled:**
+- `push_robot = None`, `add_base_mass = None`, `base_com = None`
+- Observation noise off (`enable_corruption = False`)
+- Fixed spawn position, fixed heading = (0, 0)
+
+```bash
+# 1. Set FINETUNE = True in g1_attention_env_cfg.py
+# 2. Start finetune from a pretrained checkpoint
 python scripts/rsl_rl/train.py \
   --task LeggedRLLab-Isaac-Parkour-Attention-Unitree-G1-v0 \
   --num_envs 2048 \
@@ -442,47 +522,27 @@ python scripts/rsl_rl/train.py \
   --load_run 2026-06-18_18-15-43 \
   --checkpoint model_57500.pt \
   --run_name finetune_stones
+
+# 3. Set FINETUNE = False after finetune is done
 ```
 
+---
 
-#### Finetune
-
-微调阶段专注于梅花桩（stake）地形的步态训练，强制左右脚交替踩踏。通过设置 `FINETUNE = True` 启用：
-
-```python
-# 在 g1_attention_env_cfg.py 中：
-FINETUNE = True  # 启用微调模式
-```
-
-**微调模式的变化：**
-
-1. **地形混合**：80% 梅花桩（double_column + alternate_column × 2），20% 楼梯/间隙/石桥
-2. **奖励权重增强**：
-   - `feet_air_time`: 0.25 → 0.5（更强的交替步态奖励）
-   - `feet_air_time_variance`: -0.7 → -2.0（更强的不对称惩罚）
-   - `feet_stumble`: -2.0 → -5.0（更强的绊倒惩罚）
-   - `flat_orientation`: -1.0 → -5.0（更强的姿态稳定性）
-   - `joint_coordination`: -0.1 → -0.5（更强的手臂-腿部协调）
+#### Play — Evaluation & attention debugging
 
 ```bash
-# 1. 设置 FINETUNE = True（在 g1_attention_env_cfg.py 中）
-# 2. 从预训练 checkpoint 开始微调
-python scripts/rsl_rl/train.py \
-  --task LeggedRLLab-Isaac-Parkour-Attention-Unitree-G1-v0 \
-  --num_envs 2048 \
-  --headless \
-  --logger tensorboard \
-  --resume \
-  --load_run 2026-06-18_18-15-43 \
-  --checkpoint model_57500.pt \
-  --run_name finetune_stones
+# Basic play
+python scripts/rsl_rl/play.py \
+  --task LeggedRLLab-Isaac-Parkour-Attention-Unitree-G1-Play-v0 \
+  --num_envs 14
 
-# 3. 微调完成后，将 FINETUNE 改回 False 再 play
-```
+# Load specific checkpoint
+python scripts/rsl_rl/play.py \
+  --task LeggedRLLab-Isaac-Parkour-Attention-Unitree-G1-Play-v0 \
+  --num_envs 14 \
+  --ckpt model_54000.pt
 
-#### Play（可视化评估）
-
-```bash
+# Attention viz + stats + save weights
 python scripts/rsl_rl/play.py \
   --task LeggedRLLab-Isaac-Parkour-Attention-Unitree-G1-Play-v0 \
   --num_envs 14 \
@@ -490,21 +550,44 @@ python scripts/rsl_rl/play.py \
   --vis_attention \
   --print_attention_stats \
   --save_attention_weights
+
+# Headless eval
+python scripts/rsl_rl/play.py \
+  --task LeggedRLLab-Isaac-Parkour-Attention-Unitree-G1-Play-v0 \
+  --num_envs 14 \
+  --ckpt model_54000.pt \
+  --headless
 ```
 
-#### Play 地形配置
+**Attention play flags:**
 
-Play 时使用 `configure_g1_attention_play_terrain()` 配置地形，当前默认使用 `HfAlternateColumnStakesTerrain`（交替梅花桩）：
-- 7 种子地形 × 2 个机器人 = 14 个环境
-- 固定参数：桩高 0.0m，边长 0.2m，桩间距 0.3m，列间距 0.3m，无抖动
+| Flag | Description |
+|------|-------------|
+| `--vis_attention` | Colored spheres on terrain (red=high attn, blue=low) |
+| `--print_attention_stats` | Print per-step stats (mean, entropy, spatial L/R/F/B) |
+| `--attention_print_interval` | Stats print interval in steps (default 50) |
+| `--save_attention_weights` | Save `.npy` for heatmap GIF generation |
+| `--ckpt` | Checkpoint file name under `ckpt/` |
+| `--headless` | Run without GUI |
 
-如需切换 play 地形，编辑 `g1_attention_env_cfg.py` 中的 `configure_g1_attention_play_terrain()` 函数，取消注释所需的地形类型。
+**Play terrain presets** (in `configure_g1_attention_play_terrain()`):
 
+| Preset | Terrain | Use case |
+|--------|---------|----------|
+| A | AlternateColumnStakes | Stakes (default) |
+| B | DoubleColumnStakes | Double stakes |
+| C | SteppingStones | Stepping stones |
+| D | StonesBridge | Stone bridge |
+| E | ConcentricGaps | Concentric gaps |
+| F | PyramidStairs (up) | Stairs up |
+| G | PyramidStairs (down) | Stairs down |
 
-#### Go2 训练
+---
+
+#### Go2
 
 ```bash
-# Go2 — train AME attention parkour
+# Go2 — train
 python scripts/rsl_rl/train.py \
   --task LeggedRLLab-Isaac-Parkour-Attention-Unitree-Go2-v0 \
   --num_envs 2048 \

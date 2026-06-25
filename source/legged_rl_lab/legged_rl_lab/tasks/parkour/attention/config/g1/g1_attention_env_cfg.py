@@ -39,10 +39,16 @@ from legged_rl_lab.terrains import (
 import legged_rl_lab.tasks.parkour.attention.mdp as mdp
 
 
-# Toggle to switch reward weights + terrain mix to AME-style finetune regime.
-FINETUNE = False
+# =============================================================================
+# FINETUNE toggle — set True to switch to AME-style finetune (stake-heavy
+# terrain mix + stronger gait-shaping rewards + no randomization).
+# =============================================================================
+FINETUNE = True
 
 
+# =============================================================================
+# Robot body/contact constants
+# =============================================================================
 G1_CONTACT_LINKS: tuple[str, ...] = (
     "torso_link",
     "left_hip_roll_link",
@@ -62,6 +68,11 @@ G1_FOOT_BODIES: tuple[str, ...] = ("left_ankle_roll_link", "right_ankle_roll_lin
 G1_HEIGHT_SCANNER_PRIM_PATH = "{ENV_REGEX_NS}/Robot/torso_link"
 G1_FOOT_GRID_PATTERN = patterns.GridPatternCfg(resolution=0.1, size=(0.2, 0.2), ordering="xy")
 G1_FOOT_RAY_OFFSET = RayCasterCfg.OffsetCfg(pos=(0.0, 0.0, 20.0))
+
+
+# =============================================================================
+# Config classes — Scene, Observations, Commands, Events, Rewards, etc.
+# =============================================================================
 
 
 @configclass
@@ -280,7 +291,7 @@ class G1AttentionRewardsCfg(AttentionRewardsCfg):
     alive = RewTerm(func=mdp.alive, weight=1.0)
     tracking_lin_vel = RewTerm(
         func=mdp.track_lin_vel_xy_yaw_frame_exp,
-        weight=1.5,
+        weight=2.0,       # AME weight (was 1.5)
         params={"command_name": "base_velocity", "std": 0.25},
     )
     tracking_ang_vel = RewTerm(
@@ -289,7 +300,7 @@ class G1AttentionRewardsCfg(AttentionRewardsCfg):
         params={"command_name": "base_velocity", "std": 0.25},
     )
     # -- penalties
-    ang_vel_xy_l2 = RewTerm(func=mdp.ang_vel_xy_l2, weight=-0.1)
+    ang_vel_xy_l2 = RewTerm(func=mdp.ang_vel_xy_l2, weight=-0.05)       # AME weight (was -0.1)
     collision = RewTerm(
         func=mdp.undesired_contacts,
         weight=-1.0,
@@ -304,7 +315,7 @@ class G1AttentionRewardsCfg(AttentionRewardsCfg):
     dof_pos_limits_pen = RewTerm(func=mdp.joint_pos_limits, weight=-1.0)
     dof_torques_limits = RewTerm(func=mdp.applied_torque_limits, weight=-0.01)
     action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-0.01)
-    flat_orientation = RewTerm(func=mdp.flat_orientation_l2, weight=-1.0)
+    flat_orientation = RewTerm(func=mdp.flat_orientation_l2, weight=-2.0)   # AME weight (was -1.0)
     # -- style
     feet_air_time = RewTerm(
         func=mdp.feet_air_time_positive_biped,
@@ -317,7 +328,7 @@ class G1AttentionRewardsCfg(AttentionRewardsCfg):
     )
     feet_air_time_variance = RewTerm(
         func=mdp.air_time_variance_penalty,
-        weight=-0.7,
+        weight=-0.1,       # AME weight (was -0.7)
         params={
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link"),
         },
@@ -332,18 +343,18 @@ class G1AttentionRewardsCfg(AttentionRewardsCfg):
     )
     feet_stumble = RewTerm(
         func=mdp.feet_stumble,
-        weight=-2.0,
+        weight=-1.0,       # AME weight (was -2.0)
         params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link")},
     )
     feet_too_near = RewTerm(
         func=mdp.feet_too_near,
-        weight=-5.0,
+        weight=-1.0,       # AME weight (was -5.0)
         params={"asset_cfg": SceneEntityCfg("robot", body_names=list(G1_FOOT_BODIES)), "threshold": 0.2},
     )
     # -- coordination
     joint_coordination = RewTerm(
         func=mdp.joint_coordination_rel,
-        weight=-0.1,
+        weight=-0.2,       # AME weight (was -0.1)
         params={
             "asset_cfg": SceneEntityCfg("robot"),
             "coord_joints": [
@@ -363,7 +374,7 @@ class G1AttentionRewardsCfg(AttentionRewardsCfg):
     )
     joint_deviation_arms = RewTerm(
         func=mdp.joint_deviation_l1,
-        weight=-0.1,
+        weight=-0.3,       # AME weight (was -0.1)
         params={
             "asset_cfg": SceneEntityCfg(
                 "robot",
@@ -401,240 +412,176 @@ class G1AttentionCurriculumCfg(AttentionCurriculumCfg):
     terrain_levels = CurrTerm(func=mdp.terrain_levels_vel)
 
 
-def configure_g1_attention_train_terrain(terrain_generator: Any) -> None:
+# =============================================================================
+# Terrain configuration helpers
+# =============================================================================
+
+def _configure_terrain_common(terrain_generator: Any) -> None:
+    """Apply grid/scale settings shared across train / finetune / play."""
     terrain_generator.size = (8.0, 8.0)
-    terrain_generator.border_width = 50.0
-    terrain_generator.num_rows = 10
-    terrain_generator.num_cols = 20
     terrain_generator.horizontal_scale = 0.05
     terrain_generator.vertical_scale = 0.005
     terrain_generator.slope_threshold = 0.75
     terrain_generator.use_cache = False
+
+
+def configure_g1_attention_train_terrain(terrain_generator: Any) -> None:
+    """Regular training terrain — matches AME ROUGH_TERRAINS_CFG exactly."""
+    _configure_terrain_common(terrain_generator)
+    terrain_generator.border_width = 50.0
+    terrain_generator.num_rows = 10
+    terrain_generator.num_cols = 20
     terrain_generator.sub_terrains = {
         "pyramid_stairs": terrain_gen.MeshPyramidStairsTerrainCfg(
-            proportion=0.1,
-            step_height_range=(0.05, 0.2),
-            step_width=0.3,
-            platform_width=3.0,
-            border_width=1.0,
-            holes=False,
+            proportion=0.1, step_height_range=(0.05, 0.2),
+            step_width=0.3, platform_width=3.0, border_width=1.0, holes=False,
         ),
         "pyramid_stairs_inv": terrain_gen.MeshInvertedPyramidStairsTerrainCfg(
-            proportion=0.1,
-            step_height_range=(0.05, 0.2),
-            step_width=0.3,
-            platform_width=3.0,
-            border_width=1.0,
-            holes=False,
+            proportion=0.1, step_height_range=(0.05, 0.2),
+            step_width=0.3, platform_width=3.0, border_width=1.0, holes=False,
         ),
         "boxes": terrain_gen.MeshRandomGridTerrainCfg(
-            proportion=0.1,
-            grid_width=0.45,
-            grid_height_range=(0.05, 0.2),
-            platform_width=2.0,
+            proportion=0.1, grid_width=0.45, grid_height_range=(0.05, 0.2), platform_width=2.0,
         ),
         "random_rough": terrain_gen.HfRandomUniformTerrainCfg(
-            proportion=0.15,
-            noise_range=(0.02, 0.10),
-            noise_step=0.02,
-            downsampled_scale=0.1,
-            border_width=0.25,
+            proportion=0.1, noise_range=(0.02, 0.10), noise_step=0.02,
+            downsampled_scale=0.1, border_width=0.25,
         ),
         "hf_pyramid_slope": terrain_gen.HfPyramidSlopedTerrainCfg(
-            proportion=0.1,
-            slope_range=(0.0, 0.4),
-            platform_width=2.0,
-            border_width=0.25,
+            proportion=0.1, slope_range=(0.0, 0.4), platform_width=2.0, border_width=0.25,
         ),
         "hf_pyramid_slope_inv": terrain_gen.HfInvertedPyramidSlopedTerrainCfg(
-            proportion=0.1,
-            slope_range=(0.0, 0.4),
-            platform_width=2.0,
-            border_width=0.25,
+            proportion=0.1, slope_range=(0.0, 0.4), platform_width=2.0, border_width=0.25,
         ),
         "hf_steppingstones": terrain_gen.HfSteppingStonesTerrainCfg(
-            proportion=0.2,
-            stone_height_max=0.05,
-            stone_width_range=(0.25, 0.5),
-            stone_distance_range=(0.05, 0.25),
-            platform_width=2.0,
-            holes_depth=-2.0,
-            border_width=0.25,
+            proportion=0.2, stone_height_max=0.05, stone_width_range=(0.25, 0.5),
+            stone_distance_range=(0.05, 0.25), platform_width=2.0,
+            holes_depth=-2.0, border_width=0.25,
         ),
         "hf_gaps": HfConcentricGapTerrainCfg(
-            proportion=0.15,
-            gap_width_range=(0.1, 0.5),
-            platform_width=2.0,
-            border_width=0.25,
-            gap_depth=-2.0,
-            ground_width_range=(0.5, 0.5),
-            ground_height_max=0.025,
+            proportion=0.2, gap_width_range=(0.1, 0.5), platform_width=2.0, border_width=0.25,
+            gap_depth=-2.0, ground_width_range=(0.5, 0.5), ground_height_max=0.025,
         ),
     }
 
 
 def configure_g1_attention_finetune_terrain(terrain_generator: Any) -> None:
-    """AME-style finetune terrain: stake-heavy mix that forces left/right alternation."""
-    terrain_generator.size = (8.0, 8.0)
+    """AME-style finetune terrain — matches FINETUNE_ROUGH_TERRAINS_CFG exactly."""
+    _configure_terrain_common(terrain_generator)
     terrain_generator.border_width = 50.0
     terrain_generator.num_rows = 10
     terrain_generator.num_cols = 20
-    terrain_generator.horizontal_scale = 0.05
-    terrain_generator.vertical_scale = 0.005
-    terrain_generator.slope_threshold = 0.75
-    terrain_generator.use_cache = False
     terrain_generator.sub_terrains = {
         "pyramid_stairs": terrain_gen.MeshPyramidStairsTerrainCfg(
-            proportion=0.1,
-            step_height_range=(0.05, 0.25),
-            step_width=0.3,
-            platform_width=3.0,
-            border_width=1.0,
-            holes=False,
+            proportion=0.1, step_height_range=(0.05, 0.25),
+            step_width=0.3, platform_width=3.0, border_width=1.0, holes=False,
         ),
         "pyramid_stairs_inv": terrain_gen.MeshInvertedPyramidStairsTerrainCfg(
-            proportion=0.1,
-            step_height_range=(0.05, 0.25),
-            step_width=0.3,
-            platform_width=3.0,
-            border_width=1.0,
-            holes=False,
+            proportion=0.1, step_height_range=(0.05, 0.25),
+            step_width=0.3, platform_width=3.0, border_width=1.0, holes=False,
         ),
         "stakes1": HfDoubleColumnStakesTerrainCfg(
-            proportion=0.1,
-            stake_height_max=0.03,
-            stake_side_range=(0.20, 0.40),
-            stake_gap_range=(0.1, 0.3),
-            column_gap_range=(0.1, 0.1),
-            column_jitter=0.0,
-            holes_depth=-2.0,
-            platform_width=2.0,
-            border_width=0.25,
+            proportion=0.1, stake_height_max=0.03, stake_side_range=(0.20, 0.40),
+            stake_gap_range=(0.1, 0.3), column_gap_range=(0.1, 0.1), column_jitter=0.0,
+            holes_depth=-2.0, platform_width=2.0, border_width=0.25,
         ),
         "stakes2": HfAlternateColumnStakesTerrainCfg(
-            proportion=0.2,
-            stake_height_max=0.03,
-            stake_side_range=(0.20, 0.40),
-            stake_gap_range=(0.05, 0.15),
-            column_gap_range=(0.0, 0.2),
-            column_jitter=0.0,
-            holes_depth=-2.0,
-            platform_width=2.0,
-            border_width=0.25,
+            proportion=0.2, stake_height_max=0.03, stake_side_range=(0.20, 0.40),
+            stake_gap_range=(0.05, 0.15), column_gap_range=(0.0, 0.2), column_jitter=0.0,
+            holes_depth=-2.0, platform_width=2.0, border_width=0.25,
         ),
         "stakes3": HfAlternateColumnStakesTerrainCfg(
-            proportion=0.2,
-            stake_height_max=0.03,
-            stake_side_range=(0.20, 0.40),
-            stake_gap_range=(0.05, 0.25),
-            column_gap_range=(0.3, 0.2),
-            column_jitter=0.0,
-            holes_depth=-2.0,
-            platform_width=2.0,
-            border_width=0.25,
+            proportion=0.2, stake_height_max=0.03, stake_side_range=(0.20, 0.40),
+            stake_gap_range=(0.05, 0.25), column_gap_range=(0.3, 0.2), column_jitter=0.0,
+            holes_depth=-2.0, platform_width=2.0, border_width=0.25,
         ),
         "hf_gaps": HfConcentricGapTerrainCfg(
-            proportion=0.1,
-            gap_width_range=(0.2, 0.6),
-            platform_width=2.0,
-            border_width=0.25,
-            gap_depth=-2.0,
-            ground_width_range=(0.5, 0.5),
-            ground_height_max=0.03,
+            proportion=0.1, gap_width_range=(0.2, 0.6), platform_width=2.0, border_width=0.25,
+            gap_depth=-2.0, ground_width_range=(0.5, 0.5), ground_height_max=0.03,
         ),
         "stones_bridge": HfStonesBridgeTerrainCfg(
-            proportion=0.1,
+            proportion=0.1, platform_width=2.0, border_width=0.25, holes_depth=-2.0,
+            stone_height_max=0.03, stone_width_range=(0.25, 0.35), stone_distance_range=(0.3, 0.5),
+            stone_length_range=(0.6, 1.0), stone_lateral_distance_range=(0.0, 0.0),
+        ),
+        "rails": terrain_gen.MeshRailsTerrainCfg(
+            proportion=0.1, rail_height_range=(0.25, 0.05), rail_thickness_range=(0.1, 0.3),
             platform_width=2.0,
-            border_width=0.25,
-            holes_depth=-2.0,
-            stone_height_max=0.03,
-            stone_width_range=(0.25, 0.35),
-            stone_distance_range=(0.3, 0.5),
-            stone_length_range=(0.6, 1.0),
-            stone_lateral_distance_range=(0.0, 0.0),
         ),
     }
 
 
 def configure_g1_attention_play_terrain(terrain_generator: Any) -> None:
+    """Play/evaluation terrain: single tile, fixed difficulty, pick one preset."""
+    _configure_terrain_common(terrain_generator)
     terrain_generator.num_rows = 1
     terrain_generator.num_cols = 1
     terrain_generator.curriculum = False
     terrain_generator.difficulty_range = (1.0, 1.0)
-    terrain_generator.size = (8.0, 8.0)
     terrain_generator.border_width = 3.0
+
+    # ── Pick ONE terrain preset below ──────────────────────────────────────
+
+    # [A] Alternate column stakes (current default, fixed params)
     terrain_generator.sub_terrains = {
         "stakes": HfAlternateColumnStakesTerrainCfg(
-                proportion=0.5, stake_height_max=0.0, stake_side_range=(0.2, 0.2), stake_gap_range=(0.3, 0.3),
-                column_gap_range=(0.3, 0.3), column_jitter=0.0, holes_depth=-2.0, platform_width=2.0, border_width=0.25),
-        # "hf_steppingstones": terrain_gen.HfSteppingStonesTerrainCfg(
-        #     proportion=1.0,
-        #     stone_height_max=0.05,
-        #     stone_width_range=(0.25, 0.5),
-        #     stone_distance_range=(0.05, 0.25),
-        #     platform_width=2.0,
-        #     holes_depth=-2.0,
-        #     border_width=0.25,
-        # ),
-        # "stones_bridge": HfStonesBridgeTerrainCfg(
-        #     proportion=0.5,
-        #     stone_height_max=0.05,
-        #     stone_width_range=(0.3, 0.5),
-        #     stone_length_range=(0.3, 0.5),
-        #     stone_distance_range=(0.1, 0.25),
-        #     stone_lateral_distance_range=(0.05, 0.15),
-        #     holes_depth=-2.0,
-        #     platform_width=2.0,
-        #     border_width=0.25,
-        # ),
-        # "concentric_gaps": HfConcentricGapTerrainCfg(
-        #     proportion=0.25,
-        #     gap_width_range=(0.5, 0.5),
-        #     ground_width_range=(0.5, 0.5),
-        #     ground_height_max=0.025,
-        #     gap_depth=-2.0,
-        #     platform_width=2.0,
-        #     border_width=0.25,
-        # ),
-        # "double_column_stakes": HfDoubleColumnStakesTerrainCfg(
-        #     proportion=0.5,
-        #     stake_height_max=0.0,
-        #     stake_side_range=(0.2, 0.2),
-        #     stake_gap_range=(0.3, 0.3),
-        #     column_gap_range=(0.3, 0.3),
-        #     column_jitter=0.0,
-        #     holes_depth=-2.0,
-        #     platform_width=2.0,
-        #     border_width=0.25,
-        # ),
-        # "alternate_column_stakes": HfAlternateColumnStakesTerrainCfg(
-        #     proportion=0.5,
-        #     stake_height_max=0.0,
-        #     stake_side_range=(0.2, 0.2),
-        #     stake_gap_range=(0.3, 0.3),
-        #     column_gap_range=(0.3, 0.3),
-        #     column_jitter=0.0,
-        #     holes_depth=-2.0,
-        #     platform_width=2.0,
-        #     border_width=0.25,
-        # ),
-        # "stairs_up": terrain_gen.MeshPyramidStairsTerrainCfg(
-        #     proportion=0.125,
-        #     step_height_range=(0.10, 0.16),
-        #     step_width=0.30,
-        #     platform_width=2.0,
-        #     border_width=0.4,
-        #     holes=False,
-        # ),
-        # "stairs_down": terrain_gen.MeshInvertedPyramidStairsTerrainCfg(
-        #     proportion=0.125,
-        #     step_height_range=(0.10, 0.16),
-        #     step_width=0.30,
-        #     platform_width=2.0,
-        #     border_width=0.4,
-        #     holes=False,
-        # ),
+            proportion=0.5, stake_height_max=0.0, stake_side_range=(0.2, 0.2),
+            stake_gap_range=(0.3, 0.3), column_gap_range=(0.3, 0.3), column_jitter=0.0,
+            holes_depth=-2.0, platform_width=2.0, border_width=0.25,
+        ),
     }
+
+    # [B] Double column stakes
+    # terrain_generator.sub_terrains = {
+    #     "double_column_stakes": HfDoubleColumnStakesTerrainCfg(
+    #         proportion=0.5, stake_height_max=0.0, stake_side_range=(0.2, 0.2),
+    #         stake_gap_range=(0.3, 0.3), column_gap_range=(0.3, 0.3), column_jitter=0.0,
+    #         holes_depth=-2.0, platform_width=2.0, border_width=0.25,
+    #     ),
+    # }
+
+    # [C] Stepping stones
+    # terrain_generator.sub_terrains = {
+    #     "steppingstones": terrain_gen.HfSteppingStonesTerrainCfg(
+    #         proportion=1.0, stone_height_max=0.05, stone_width_range=(0.25, 0.5),
+    #         stone_distance_range=(0.05, 0.25), platform_width=2.0,
+    #         holes_depth=-2.0, border_width=0.25,
+    #     ),
+    # }
+
+    # [D] Stone bridge
+    # terrain_generator.sub_terrains = {
+    #     "stones_bridge": HfStonesBridgeTerrainCfg(
+    #         proportion=0.5, stone_height_max=0.05, stone_width_range=(0.3, 0.5),
+    #         stone_length_range=(0.3, 0.5), stone_distance_range=(0.1, 0.25),
+    #         stone_lateral_distance_range=(0.05, 0.15), holes_depth=-2.0,
+    #         platform_width=2.0, border_width=0.25,
+    #     ),
+    # }
+
+    # [E] Concentric gaps
+    # terrain_generator.sub_terrains = {
+    #     "concentric_gaps": HfConcentricGapTerrainCfg(
+    #         proportion=0.25, gap_width_range=(0.5, 0.5), ground_width_range=(0.5, 0.5),
+    #         ground_height_max=0.025, gap_depth=-2.0, platform_width=2.0, border_width=0.25,
+    #     ),
+    # }
+
+    # [F] Stairs up
+    # terrain_generator.sub_terrains = {
+    #     "stairs_up": terrain_gen.MeshPyramidStairsTerrainCfg(
+    #         proportion=0.125, step_height_range=(0.10, 0.16), step_width=0.30,
+    #         platform_width=2.0, border_width=0.4, holes=False,
+    #     ),
+    # }
+
+    # [G] Stairs down
+    # terrain_generator.sub_terrains = {
+    #     "stairs_down": terrain_gen.MeshInvertedPyramidStairsTerrainCfg(
+    #         proportion=0.125, step_height_range=(0.10, 0.16), step_width=0.30,
+    #         platform_width=2.0, border_width=0.4, holes=False,
+    #     ),
+    # }
 
 
 def configure_g1_attention_sensors(scene: Any, update_period: float) -> None:
@@ -642,6 +589,11 @@ def configure_g1_attention_sensors(scene: Any, update_period: float) -> None:
         sensor = getattr(scene, sensor_name, None)
         if sensor is not None:
             sensor.update_period = update_period
+
+
+# =============================================================================
+# Main environment config
+# =============================================================================
 
 
 @configclass
@@ -662,10 +614,22 @@ class G1AttentionEnvCfg(AttentionEnvCfgMixin, AttentionBaseEnvCfg):
         self.configure_attention_train(G1_HEIGHT_SCANNER_PRIM_PATH)
 
         if FINETUNE:
-            self._apply_finetune_reward_weights()
+            self._apply_finetune()
 
-    def _apply_finetune_reward_weights(self) -> None:
-        """Stronger gait-shaping weights for the finetune phase (mirrors AME)."""
+    def _apply_finetune(self) -> None:
+        """Apply AME-style finetune overrides.
+
+        Three changes vs regular training:
+        1. Stronger gait-shaping reward weights
+        2. No domain randomization (push, mass, COM, obs noise)
+        3. Stake-heavy terrain mix
+        """
+        # ── Reward weights ──────────────────────────
+        self.rewards.tracking_lin_vel.weight = 2.0
+        self.rewards.tracking_ang_vel.weight = 3.0
+        self.rewards.dof_torques_limits.weight = -0.05
+        self.rewards.action_rate_l2.weight = -0.05
+        self.rewards.flat_orientation.weight = -5.0
         self.rewards.feet_air_time.weight = 0.5
         self.rewards.feet_air_time_variance.weight = -2.0
         self.rewards.feet_slide.weight = -0.3
@@ -674,7 +638,29 @@ class G1AttentionEnvCfg(AttentionEnvCfgMixin, AttentionBaseEnvCfg):
         self.rewards.joint_coordination.weight = -0.5
         self.rewards.joint_deviation_arms.weight = -0.3
         self.rewards.joint_deviation_waists.weight = -1.0
-        self.rewards.flat_orientation.weight = -5.0
+
+        # ── Disable domain randomization ────────────────────────────────────
+        self.events.push_robot = None
+        self.events.add_base_mass = None
+        self.events.base_com = None
+
+        # Disable observation noise
+        self.observations.policy.enable_corruption = False
+        self.observations.terrain_map.enable_corruption = False
+        self.observations.terrain_map.terrain_map.params["noise"] = False
+
+        # Fix reset position to terrain center
+        if hasattr(self.events, "reset_base") and self.events.reset_base is not None:
+            self.events.reset_base.params = {
+                "pose_range": {"x": (0.0, 0.0), "y": (0.0, 0.0), "yaw": (0.0, 0.0)},
+                "velocity_range": {
+                    "x": (0.0, 0.0), "y": (0.0, 0.0), "z": (0.0, 0.0),
+                    "roll": (0.0, 0.0), "pitch": (0.0, 0.0), "yaw": (0.0, 0.0),
+                },
+            }
+
+        # Fix heading to forward-only
+        self.commands.base_velocity.ranges.heading = (0.0, 0.0)
 
     def configure_attention_train(self, height_scanner_prim_path: str) -> None:
         AttentionEnvCfgMixin.configure_attention_train(self, height_scanner_prim_path)
@@ -689,16 +675,13 @@ class G1AttentionEnvCfg(AttentionEnvCfgMixin, AttentionBaseEnvCfg):
     def configure_attention_play(self) -> None:
         AttentionEnvCfgMixin.configure_attention_play(self)
 
-        # 7 sub-terrains × 2 robots each = 14, all spawn from the platform center
         self.scene.num_envs = 14
         self.scene.terrain.max_init_terrain_level = None
 
         # Spawn at terrain center with no positional jitter
         if hasattr(self.events, "reset_base") and self.events.reset_base is not None:
             self.events.reset_base.params["pose_range"] = {
-                "x": (0.0, 0.0),
-                "y": (0.0, 0.0),
-                "yaw": (0.0, 0.0),
+                "x": (0.0, 0.0), "y": (0.0, 0.0), "yaw": (0.0, 0.0),
             }
 
         # Fixed forward velocity with heading lock — mirrors AME play behavior
