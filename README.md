@@ -18,6 +18,8 @@ conda create -n legged_rl_lab python=3.11
 conda activate legged_rl_lab
 pip install -U torch==2.7.0 torchvision==0.22.0 --index-url https://download.pytorch.org/whl/cu128
 pip install --upgrade pip
+pip install "setuptools<81" wheel
+pip install --no-build-isolation flatdict==4.0.1
 ```
 
 * Install isaacsim 5.1 and isaaclab 2.3
