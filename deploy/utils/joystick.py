@@ -100,23 +100,23 @@ class PygameJoystickReader:
     # 轴索引
     AXIS_LEFT_X = 0
     AXIS_LEFT_Y = 1
-    AXIS_LT = 2
-    AXIS_RIGHT_X = 3
-    AXIS_RIGHT_Y = 4
-    AXIS_RT = 5
+    AXIS_RIGHT_X = 2
+    AXIS_RIGHT_Y = 3
+    AXIS_RT = 4
+    AXIS_LT = 5
 
     # 按钮索引
     BTN_A = 0
     BTN_B = 1
-    BTN_X = 2
-    BTN_Y = 3
-    BTN_LB = 4
-    BTN_RB = 5
-    BTN_SELECT = 6
-    BTN_START = 7
-    BTN_HOME = 8
-    BTN_L3 = 9
-    BTN_R3 = 10
+    BTN_X = 3
+    BTN_Y = 4
+    BTN_LB = 6
+    BTN_RB = 7
+    BTN_LT = 8
+    BTN_RT = 9
+    BTN_SELECT = 10
+    BTN_START = 11
+    BTN_HOME = 12
 
     def __init__(self):
         import pygame
@@ -431,7 +431,8 @@ class GameSirGamepadController(GamepadController):
       左摇杆: axes[0]=X(-1左,+1右), axes[1]=Y(-1上,+1下)
       Generic X-Box SDL: axes[2]=LT, axes[3]=右摇杆X, axes[4]=右摇杆Y, axes[5]=RT
     按钮映射:
-      Generic X-Box SDL: START=7, RB=5, D-pad 通过 hat 事件 -> 虚拟按钮 15(UP) 16(DOWN)
+      GameSir: A/B/X/Y=0/1/3/4, LB/RB=6/7, View/Menu=10/11
+      D-pad 通过 hat 事件 -> 虚拟按钮 15(UP) 16(DOWN) 17(LEFT) 18(RIGHT)
     """
 
     def __init__(
@@ -446,6 +447,8 @@ class GameSirGamepadController(GamepadController):
         btn_start=None,
         btn_rb=None,
         btn_a=None,
+        policy_switch_mode='rb_combo',
+        exit_button='start',
         deadzone=0.05,
         command_slew_rate=(2.0, 4.0, 3.0),
         debug=False,
@@ -470,11 +473,14 @@ class GameSirGamepadController(GamepadController):
             self.btn_start = PygameJoystickReader.BTN_START if btn_start is None else int(btn_start)
             self.btn_rb = PygameJoystickReader.BTN_RB if btn_rb is None else int(btn_rb)
             self.btn_a = PygameJoystickReader.BTN_A if btn_a is None else int(btn_a)
+            self.policy_switch_mode = policy_switch_mode
+            self.exit_button = exit_button
             print("✅ GameSir Gamepad initialized")
             print(
                 "   Mapping: "
                 f"LX axis {self.axis_left_x}, LY axis {self.axis_left_y}, RX axis {self.axis_right_x}, "
-                f"RB button {self.btn_rb}, A button {self.btn_a}, Start button {self.btn_start}"
+                f"RB button {self.btn_rb}, A button {self.btn_a}, Start button {self.btn_start}, "
+                f"policy_switch_mode={self.policy_switch_mode}, exit_button={self.exit_button}"
             )
         except Exception as e:
             print(f"❌ GameSir init failed: {e}")
@@ -550,16 +556,26 @@ class GameSirGamepadController(GamepadController):
                 self.set_velocity_smooth(target_vx, target_vy, target_vyaw, dt)
                 self._print_debug(raw_axes, [left_x, left_y, right_x], [target_vx, target_vy, target_vyaw])
 
-                # RB + 面键 组合 → 策略切换 (上升沿触发)
+                # 策略切换 (上升沿触发)
                 rb = self._button(buttons, self.btn_rb)
-                combos = {
-                    1: rb and self._button(buttons, self.btn_a),
-                    2: rb and bool(buttons[PygameJoystickReader.BTN_B]),
-                    3: rb and bool(buttons[PygameJoystickReader.BTN_X]),
-                    4: rb and bool(buttons[PygameJoystickReader.BTN_Y]),
-                }
-                combo_names = {1: 'RB+A (Walk)', 2: 'RB+B (Policy1)',
-                               3: 'RB+X (Policy2)', 4: 'RB+Y (Policy3)'}
+                if self.policy_switch_mode == 'face_buttons':
+                    combos = {
+                        1: self._button(buttons, self.btn_a),
+                        2: bool(buttons[PygameJoystickReader.BTN_B]),
+                        3: bool(buttons[PygameJoystickReader.BTN_X]),
+                        4: bool(buttons[PygameJoystickReader.BTN_Y]),
+                    }
+                    combo_names = {1: 'A (Policy 1)', 2: 'B (Policy 2)',
+                                   3: 'X (Policy 3)', 4: 'Y (Policy 4)'}
+                else:
+                    combos = {
+                        1: rb and self._button(buttons, self.btn_a),
+                        2: rb and bool(buttons[PygameJoystickReader.BTN_B]),
+                        3: rb and bool(buttons[PygameJoystickReader.BTN_X]),
+                        4: rb and bool(buttons[PygameJoystickReader.BTN_Y]),
+                    }
+                    combo_names = {1: 'RB+A (Walk)', 2: 'RB+B (Policy1)',
+                                   3: 'RB+X (Policy2)', 4: 'RB+Y (Policy3)'}
                 for idx, pressed in combos.items():
                     if pressed and not _prev_combos[idx]:
                         self.active_policy = idx
@@ -568,9 +584,15 @@ class GameSirGamepadController(GamepadController):
                         print(f"\n✅ [{combo_names[idx]}] activated!")
                 _prev_combos = dict(combos)
 
-                # START 按钮退出
-                if self._button(buttons, self.btn_start):
-                    print("\n✅ Start button pressed - exiting")
+                # 退出按钮
+                if self.exit_button == 'select':
+                    exit_pressed = self._button(buttons, PygameJoystickReader.BTN_SELECT)
+                    exit_name = 'Select'
+                else:
+                    exit_pressed = self._button(buttons, self.btn_start)
+                    exit_name = 'Start'
+                if exit_pressed:
+                    print(f"\n✅ {exit_name} button pressed - exiting")
                     self.exit_requested = True
                     break
 
@@ -602,6 +624,7 @@ def create_gamepad_controller(gamepad_type, vx_range=(-2.0, 4.0), vy_range=(-1.0
                               vyaw_range=(-1.57, 1.57), device_path='/dev/input/js0',
                               btn_start=None, btn_rb=None, btn_a=None,
                               axis_left_x=None, axis_left_y=None, axis_right_x=None,
+                              policy_switch_mode='rb_combo', exit_button='start',
                               deadzone=0.05, command_slew_rate=(2.0, 4.0, 3.0),
                               debug=False, debug_interval=0.5):
     """
@@ -633,6 +656,8 @@ def create_gamepad_controller(gamepad_type, vx_range=(-2.0, 4.0), vy_range=(-1.0
         axis_left_x=axis_left_x,
         axis_left_y=axis_left_y,
         axis_right_x=axis_right_x,
+        policy_switch_mode=policy_switch_mode,
+        exit_button=exit_button,
         deadzone=deadzone,
         command_slew_rate=command_slew_rate,
         debug=debug,

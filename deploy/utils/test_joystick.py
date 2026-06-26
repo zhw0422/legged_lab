@@ -1,8 +1,8 @@
 """
 手柄按键检测工具 - 盖世小鸡 / GameSir 适用
 运行方式：
-    cd /home/wzh/RoboMimic_Deploy
-    python tools/test_joystick.py
+    cd /home/wzh/legged_rl_lab
+    python deploy/utils/test_joystick.py
 
 按下任意按键/推动摇杆 → 实时打印索引和值
 按 Ctrl+C 退出

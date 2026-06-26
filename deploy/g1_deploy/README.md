@@ -15,6 +15,32 @@ conda activate env_isaaclab1
 pip install onnxruntime numpy scipy pyyaml mujoco pygame
 ```
 
+### Gamepad Mapping Check
+
+Before using a gamepad for the first time, run the mapping check script:
+
+```bash
+python deploy/utils/test_joystick.py
+```
+
+Press buttons or move joysticks. The terminal prints button indices, axis indices, and Hat values in real time. The current measured GameSir mapping is:
+
+| Control | Default index |
+| --- | --- |
+| A / B / X / Y | `button 0 / 1 / 3 / 4` |
+| LB / RB | `button 6 / 7` |
+| LT | `axis 5`, also triggers `button 8` |
+| RT | `axis 4`, also triggers `button 9` |
+| View / Menu | `button 10 / 11` |
+| Home | `button 12` |
+| Left joystick X / Y | `axis 0 / axis 1` |
+| Right joystick X / Y | `axis 2 / axis 3` |
+| D-pad | `Hat 0`, returned as `(x, y)` |
+
+For `Hat 0`, the first value is left/right: left is `-1`, right is `1`, so `(-1, 0)` / `(1, 0)`. The second value is up/down: up is `1`, down is `-1`, so `(0, 1)` / `(0, -1)`.
+
+If the detected indices differ from this table, update the `gamepad_btn_*` / `axis_*` settings in the YAML or script to match the printed values.
+
 ### Current ONNX Layout
 
 `deploy/g1_deploy/exported_policy/` currently contains:
@@ -52,6 +78,30 @@ python deploy/g1_deploy/sim2sim_walk.py \
   --model g1_flat_1.onnx \
   --input keyboard
 ```
+
+Controls:
+
+Gamepad:
+
+| Input | Function |
+| --- | --- |
+| Left joystick up/down | `vx` forward/back |
+| Left joystick left/right | `vy` strafe |
+| Right joystick left/right | `vyaw` turn |
+| **RB + A** | Walk policy |
+| **RB + B/X/Y** | Policy slots 1/2/3 placeholders |
+| **Menu / Start** | Exit |
+
+Keyboard:
+
+| Input | Function |
+| --- | --- |
+| **W/S** or up/down arrows | Increase/decrease `vx` |
+| **A/D** | Increase/decrease `vy` |
+| **Q/E** or left/right arrows | Increase/decrease `vyaw` |
+| **Space** or **0** | Zero velocity command |
+| **1/2/3/4** | Switch policy slot |
+| **X** or **Esc** | Exit |
 
 ### 2. AMP Walk / Run Velocity Policies
 
@@ -105,6 +155,30 @@ python deploy/g1_deploy/sim2sim_amp.py \
   --debug_gamepad
 ```
 
+Controls:
+
+Gamepad:
+
+| Input | Function |
+| --- | --- |
+| Left joystick up | `vx` forward. Backward command is disabled in the current `g1_amp.yaml`. |
+| Left joystick left/right | `vy` strafe |
+| Right joystick left/right | `vyaw` turn |
+| **RB + A** | AMP policy |
+| **RB + B/X/Y** | Policy slots 1/2/3 placeholders |
+| **Menu / Start** | Exit |
+
+Keyboard:
+
+| Input | Function |
+| --- | --- |
+| **W/S** or up/down arrows | Increase/decrease `vx` |
+| **A/D** | Increase/decrease `vy` |
+| **Q/E** or left/right arrows | Increase/decrease `vyaw` |
+| **Space** or **0** | Zero velocity command |
+| **1/2/3/4** | Switch policy slot |
+| **X** or **Esc** | Exit |
+
 ### 3. Motion Tracking / Mimic
 
 Use `g1_mimic.yaml` with `g1_dance.onnx` or `g1_jump.onnx`. The tracking ONNX embeds the reference motion clip. It takes the current observation and `time_step`, then outputs actions and reference joint/body states.
@@ -134,69 +208,19 @@ python deploy/g1_deploy/sim2sim_mimic.py \
   --input keyboard
 ```
 
-`sim2sim_mimic.py` starts with `g1_flat_1.onnx` for standing stabilization. After the robot is stable, press **RB + B** (gamepad) or **2** (keyboard) to switch to the tracking policy specified by `--model`.
+`sim2sim_mimic.py` starts with `g1_flat_1.onnx` for standing stabilization. After the robot is stable, press **B** (gamepad) or **2** (keyboard) to switch to the tracking policy specified by `--model`.
 
-### Controls
-
-#### Walk (`sim2sim_walk.py`)
+Controls:
 
 Gamepad:
 
 | Input | Function |
 | --- | --- |
-| Left joystick up/down | `vx` forward/back |
-| Left joystick left/right | `vy` strafe |
-| Right joystick left/right | `vyaw` turn |
-| **RB + A** | Walk policy |
-| **RB + B/X/Y** | Policy slots 1/2/3 placeholders |
-| **Start** | Exit |
-
-Keyboard:
-
-| Input | Function |
-| --- | --- |
-| **W/S** or up/down arrows | Increase/decrease `vx` |
-| **A/D** | Increase/decrease `vy` |
-| **Q/E** or left/right arrows | Increase/decrease `vyaw` |
-| **Space** or **0** | Zero velocity command |
-| **1/2/3/4** | Switch policy slot |
-| **X** or **Esc** | Exit |
-
-#### AMP (`sim2sim_amp.py`)
-
-Gamepad:
-
-| Input | Function |
-| --- | --- |
-| Left joystick up | `vx` forward. Backward command is disabled in the current `g1_amp.yaml`. |
-| Left joystick left/right | `vy` strafe |
-| Right joystick left/right | `vyaw` turn |
-| **RB + A** | AMP policy |
-| **RB + B/X/Y** | Policy slots 1/2/3 placeholders |
-| **Start** | Exit |
-
-Keyboard:
-
-| Input | Function |
-| --- | --- |
-| **W/S** or up/down arrows | Increase/decrease `vx` |
-| **A/D** | Increase/decrease `vy` |
-| **Q/E** or left/right arrows | Increase/decrease `vyaw` |
-| **Space** or **0** | Zero velocity command |
-| **1/2/3/4** | Switch policy slot |
-| **X** or **Esc** | Exit |
-
-#### Motion Tracking (`sim2sim_mimic.py`)
-
-Gamepad:
-
-| Input | Function |
-| --- | --- |
-| **RB + A** | Flat walk stabilization policy |
-| **RB + B** | Main mimic/tracking policy specified by `--model` |
-| **RB + X** | `g1_jump.onnx` |
-| **RB + Y** | `g1_dance.onnx` |
-| **Start** | Exit |
+| **A** | Flat walk stabilization policy |
+| **B** | Main mimic/tracking policy specified by `--model` |
+| **X** | `g1_jump.onnx` |
+| **Y** | `g1_dance.onnx` |
+| **View / Select** | Exit |
 
 Keyboard:
 
@@ -218,10 +242,10 @@ Current tracking registry structure:
 
 ```python
 policy_registry = {
-    1: (flat_config,  'g1_flat_1.onnx'),  # RB+A: stand / stabilize
-    2: (mimic_config, args.model),        # RB+B: main mimic model
-    3: (mimic_config, 'g1_jump.onnx'),    # RB+X
-    4: (mimic_config, 'g1_dance.onnx'),   # RB+Y
+    1: (flat_config,  'g1_flat_1.onnx'),  # 1 / A: stand / stabilize
+    2: (mimic_config, args.model),        # 2 / B: main mimic model
+    3: (mimic_config, 'g1_jump.onnx'),    # 3 / X
+    4: (mimic_config, 'g1_dance.onnx'),   # 4 / Y
 }
 ```
 

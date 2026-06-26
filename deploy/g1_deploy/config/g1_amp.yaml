@@ -114,11 +114,11 @@ action_scale: [0.25, 0.25, 0.25,          # hip_pitch(L,R), waist_yaw
 # Gamepad command multiply scale
 command_scale: [1.0, 1.0, 1.0]
 
-# pygame "Generic X-Box pad" axis mapping:
-# axes[0]=left_x, axes[1]=left_y, axes[2]=LT, axes[3]=right_x, axes[4]=right_y, axes[5]=RT
+# pygame GameSir axis mapping:
+# axes[0]=left_x, axes[1]=left_y, axes[2]=right_x, axes[3]=right_y, axes[4]=RT, axes[5]=LT
 gamepad_axis_left_x: 0
 gamepad_axis_left_y: 1
-gamepad_axis_right_x: 3
+gamepad_axis_right_x: 2
 gamepad_deadzone: 0.05
 # Max command acceleration [vx m/s^2, vy m/s^2, vyaw rad/s^2].
 # This lets the policy ramp up even if the physical stick is pushed to max instantly.

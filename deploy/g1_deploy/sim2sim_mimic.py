@@ -509,14 +509,14 @@ if __name__ == '__main__':
     mimic_config = resolve_config(args.config)
     flat_config = resolve_config('g1_walk.yaml')
 
-    # ---- Policy registry (gamepad switching: RB + A/B/X/Y) ----
+    # ---- Policy registry (keyboard: 1/2/3/4, gamepad: A/B/X/Y) ----
     # Slot 1 (startup): flat walk policy for standing stabilization
-    # Slot 2 (RB+B):    main tracking/mimic policy
+    # Slot 2: main tracking/mimic policy
     policy_registry = {
-        1: (flat_config, 'g1_flat_1.onnx'),                                     # RB+A: flat stabilize
-        2: (mimic_config, args.model),                                          # RB+B: main mimic policy
-        3: (resolve_config('g1_mimic.yaml'), 'g1_jump.onnx'),          # RB+X: placeholder
-        4: (resolve_config('g1_mimic.yaml'), 'g1_dance.onnx'),          # RB+Y: placeholder
+        1: (flat_config, 'g1_flat_1.onnx'),                            # 1 / A: flat stabilize
+        2: (mimic_config, args.model),                                 # 2 / B: main mimic policy
+        3: (resolve_config('g1_mimic.yaml'), 'g1_jump.onnx'),           # 3 / X: jump
+        4: (resolve_config('g1_mimic.yaml'), 'g1_dance.onnx'),          # 4 / Y: dance
     }
 
     # 1. Initialize controller with flat policy (stable standing first)
@@ -537,6 +537,8 @@ if __name__ == '__main__':
             vx_range=[-1.0, 1.0],
             vy_range=[-0.5, 0.5],
             vyaw_range=[-1.0, 1.0],
+            policy_switch_mode='face_buttons',
+            exit_button='select',
         )
     gamepad.start()
     gamepad.active_policy = 1
@@ -551,11 +553,11 @@ if __name__ == '__main__':
         print("  4 : g1_dance.onnx")
         print("  X or Esc : Exit")
     else:
-        print("  RB + A  : Flat walk policy (stand / stabilize)")
-        print("  RB + B  : Main mimic / tracking policy")
-        print("  RB + X  : Policy 3 (placeholder)")
-        print("  RB + Y  : Policy 4 (placeholder)")
-        print("  Start   : Exit")
+        print("  A      : Flat walk policy (stand / stabilize)")
+        print("  B      : Main mimic / tracking policy")
+        print("  X      : g1_jump.onnx")
+        print("  Y      : g1_dance.onnx")
+        print("  Select : Exit")
     print("=" * 70 + "\n")
 
     # 3. Run
