@@ -130,7 +130,6 @@ class MimicController(Controller):
         self.ref_joint_vel = None
         self.ref_body_pos_w = None
         self.ref_body_quat_w = None
-        self.transition_start_joint_pos = None
         self.sport_state = unitree_go_msg_dds__SportModeState_()
         self.sport_state_received = False
         super().__init__(flat_config, net, domain_id=domain_id, debug_policy=debug_policy)
@@ -187,7 +186,6 @@ class MimicController(Controller):
         self.ref_body_pos_w = None
         self.ref_body_quat_w = None
         self.action[:] = 0.0
-        self.transition_start_joint_pos = self._read_joint_pos().copy()
         self.control_start_time = time.time()
         self._infer_tracking_policy(np.zeros((1, self.config.num_obs), dtype=np.float32))
 
@@ -200,12 +198,6 @@ class MimicController(Controller):
             self.switch_to_mimic()
         self._last_a = a
         self._last_b = b
-
-    def _read_joint_pos(self) -> np.ndarray:
-        joint_pos = np.zeros(self.config.num_actions, dtype=np.float32)
-        for i, motor_idx in enumerate(self.config.sdk2isaac_idx):
-            joint_pos[i] = self.low_state.motor_state[motor_idx].q
-        return joint_pos
 
     def _infer_tracking_policy(self, obs_batch):
         obs = obs_batch.reshape(1, -1).astype(np.float32)
@@ -284,15 +276,6 @@ class MimicController(Controller):
         target_dof_pos = self.config.default_joint_pos + self.action * self.config.action_scale
 
         ramp = 1.0
-        if self.config.policy_ramp_time > 0.0:
-            ramp = np.clip((time.time() - self.control_start_time) / self.config.policy_ramp_time, 0.0, 1.0)
-            if self.transition_start_joint_pos is not None:
-                target_dof_pos = self.transition_start_joint_pos + ramp * (
-                    target_dof_pos - self.transition_start_joint_pos
-                )
-            else:
-                target_dof_pos = self.config.default_joint_pos + ramp * (target_dof_pos - self.config.default_joint_pos)
-
         self.print_policy_debug(np.zeros(3, dtype=np.float32), np.zeros(3, dtype=np.float32), base_ang_vel_b, joint_pos_rel, joint_vel, target_dof_pos, raw_action, ramp)
         with self.cmd_lock:
             for i, motor_idx in enumerate(self.config.sdk2isaac_idx):

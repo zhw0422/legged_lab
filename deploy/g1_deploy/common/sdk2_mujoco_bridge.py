@@ -146,6 +146,12 @@ class Sdk2MujocoBridge:
         self.wireless_controller = unitree_go_msg_dds__WirelessController_()
         self.low_cmd_lock = Lock()
         self.last_cmd_time = 0.0
+        self.low_cmd_received = False
+        self.low_cmd_q = np.zeros(self.num_motor, dtype=np.float32)
+        self.low_cmd_dq = np.zeros(self.num_motor, dtype=np.float32)
+        self.low_cmd_kp = np.zeros(self.num_motor, dtype=np.float32)
+        self.low_cmd_kd = np.zeros(self.num_motor, dtype=np.float32)
+        self.low_cmd_tau = np.zeros(self.num_motor, dtype=np.float32)
 
         self.remote = SimRemoteState(input_mode=input_mode, joystick_type=joystick_type)
 
@@ -185,40 +191,50 @@ class Sdk2MujocoBridge:
 
     def lowcmd_handler(self, msg: LowCmd_) -> None:
         with self.low_cmd_lock:
-            raw_ctrl = np.zeros(self.num_motor, dtype=np.float32)
-            q_des = np.zeros(self.num_motor, dtype=np.float32)
-            kp = np.zeros(self.num_motor, dtype=np.float32)
-            kd = np.zeros(self.num_motor, dtype=np.float32)
             for i in range(self.num_motor):
                 motor = msg.motor_cmd[i]
-                q = self.data.sensordata[i]
-                dq = self.data.sensordata[i + self.num_motor]
-                ctrl = motor.tau + motor.kp * (motor.q - q) + motor.kd * (motor.dq - dq)
-                raw_ctrl[i] = ctrl
-                q_des[i] = motor.q
-                kp[i] = motor.kp
-                kd[i] = motor.kd
-
-            if self.clamp_ctrl:
-                self.data.ctrl[: self.num_motor] = np.clip(raw_ctrl, self.ctrl_range[:, 0], self.ctrl_range[:, 1])
-            else:
-                self.data.ctrl[: self.num_motor] = raw_ctrl
-
-            if self.debug_lowcmd and time.time() - self._last_debug_time > 0.5:
-                clipped = int(np.count_nonzero(np.abs(raw_ctrl - self.data.ctrl[: self.num_motor]) > 1e-5))
-                max_idx = int(np.argmax(np.abs(raw_ctrl)))
-                name = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_ACTUATOR, max_idx)
-                print(
-                    "[LowCmdDebug] "
-                    f"q_des=[{q_des.min():+.3f},{q_des.max():+.3f}] "
-                    f"kp=[{kp.min():.1f},{kp.max():.1f}] kd=[{kd.min():.1f},{kd.max():.1f}] "
-                    f"ctrl_raw=[{raw_ctrl.min():+.1f},{raw_ctrl.max():+.1f}] "
-                    f"clipped={clipped}/{self.num_motor} max={name}:{raw_ctrl[max_idx]:+.1f}"
-                )
-                self._last_debug_time = time.time()
+                self.low_cmd_q[i] = motor.q
+                self.low_cmd_dq[i] = motor.dq
+                self.low_cmd_kp[i] = motor.kp
+                self.low_cmd_kd[i] = motor.kd
+                self.low_cmd_tau[i] = motor.tau
+            self.low_cmd_received = True
             self.low_state.mode_pr = msg.mode_pr
             self.low_state.mode_machine = msg.mode_machine
             self.last_cmd_time = time.time()
+
+    def _apply_lowcmd_control(self) -> None:
+        with self.low_cmd_lock:
+            if not self.low_cmd_received:
+                self.data.ctrl[: self.num_motor] = 0.0
+                return
+            q_des = self.low_cmd_q.copy()
+            dq_des = self.low_cmd_dq.copy()
+            kp = self.low_cmd_kp.copy()
+            kd = self.low_cmd_kd.copy()
+            tau = self.low_cmd_tau.copy()
+
+        q = self.data.sensordata[: self.num_motor]
+        dq = self.data.sensordata[self.num_motor : 2 * self.num_motor]
+        raw_ctrl = tau + kp * (q_des - q) + kd * (dq_des - dq)
+
+        if self.clamp_ctrl:
+            self.data.ctrl[: self.num_motor] = np.clip(raw_ctrl, self.ctrl_range[:, 0], self.ctrl_range[:, 1])
+        else:
+            self.data.ctrl[: self.num_motor] = raw_ctrl
+
+        if self.debug_lowcmd and time.time() - self._last_debug_time > 0.5:
+            clipped = int(np.count_nonzero(np.abs(raw_ctrl - self.data.ctrl[: self.num_motor]) > 1e-5))
+            max_idx = int(np.argmax(np.abs(raw_ctrl)))
+            name = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_ACTUATOR, max_idx)
+            print(
+                "[LowCmdDebug] "
+                f"q_des=[{q_des.min():+.3f},{q_des.max():+.3f}] "
+                f"kp=[{kp.min():.1f},{kp.max():.1f}] kd=[{kd.min():.1f},{kd.max():.1f}] "
+                f"ctrl_raw=[{raw_ctrl.min():+.1f},{raw_ctrl.max():+.1f}] "
+                f"clipped={clipped}/{self.num_motor} max={name}:{raw_ctrl[max_idx]:+.1f}"
+            )
+            self._last_debug_time = time.time()
 
     def publish_lowstate(self) -> None:
         self.low_state.tick = (self.low_state.tick + 1) & 0xFFFFFFFF
@@ -255,11 +271,7 @@ class Sdk2MujocoBridge:
         anchor_quat = self.data.xquat[self.anchor_body_id]
         self.high_state.position[:] = [float(x) for x in anchor_pos]
         self.high_state.imu_state.quaternion[:] = [float(x) for x in anchor_quat]
-        if self.have_frame_sensor:
-            base = self.dim_motor_sensor
-            self.high_state.velocity[:] = [float(x) for x in self.data.sensordata[base + 13 : base + 16]]
-        else:
-            self.high_state.velocity[:] = [float(x) for x in self.data.qvel[:3]]
+        self.high_state.velocity[:] = [float(x) for x in self.data.qvel[:3]]
         self.high_state_pub.Write(self.high_state)
 
     def publish_wireless_controller(self) -> None:
@@ -318,6 +330,7 @@ class Sdk2MujocoBridge:
                 self.data.xfrc_applied[self.elastic_body_id, :3] = self.elastic_band.advance(
                     self.data.qpos[:3], self.data.qvel[:3]
                 )
+            self._apply_lowcmd_control()
             mujoco.mj_step(self.model, self.data)
             self.publish_lowstate()
             self.publish_highstate()
