@@ -50,6 +50,7 @@ class Config:
             self.command_deadband = config.get("command_deadband", 0.0)
             self.command_smoothing_tau = config.get("command_smoothing_tau", 0.0)
             self.command_rate_limit = np.array(config.get("command_rate_limit", [100.0, 100.0, 100.0]), dtype=np.float32)
+            self.gamepad_slew_rate = np.array(config.get("gamepad_slew_rate", self.command_rate_limit), dtype=np.float32)
 
             self.num_actions = config["num_actions"]
             self.num_obs = config["num_obs"]

@@ -286,9 +286,19 @@ class Sdk2MujocoBridge:
         if self.render:
             key_callback = self.elastic_band.mujoco_key_callback if self.elastic_band is not None else None
             with mujoco.viewer.launch_passive(self.model, self.data, key_callback=key_callback) as viewer:
+                self._setup_follow_camera(viewer)
                 self._run_loop(viewer)
         else:
             self._run_loop(None)
+
+    def _setup_follow_camera(self, viewer) -> None:
+        viewer.cam.lookat[:] = self.data.qpos[:3]
+        viewer.cam.distance = float(self.config.get("camera_distance", 2.0))
+        viewer.cam.azimuth = float(self.config.get("camera_azimuth", 90.0))
+        viewer.cam.elevation = float(self.config.get("camera_elevation", -20.0))
+
+    def _update_follow_camera(self, viewer) -> None:
+        viewer.cam.lookat[:] = self.data.qpos[:3]
 
     def _run_loop(self, viewer) -> None:
         sim_dt = self.model.opt.timestep
@@ -318,6 +328,7 @@ class Sdk2MujocoBridge:
                 next_wireless_time = now + wireless_dt
 
             if viewer is not None and now >= next_viewer_time:
+                self._update_follow_camera(viewer)
                 viewer.sync()
                 next_viewer_time = now + viewer_dt
 
