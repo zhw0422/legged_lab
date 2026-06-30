@@ -462,8 +462,10 @@ python scripts/rsl_rl/train.py \
 ```bash
 python scripts/rsl_rl/play.py \
   --task LeggedRLLab-Isaac-Parkour-Attention-Unitree-G1-Play-v0 \
-  --num_envs 14 \
-  --ckpt model_69500.pt \
+  --num_envs 2 \
+  #finetune ckpt
+  #--ckpt model_.pt
+  --ckpt model_19500.pt \
   --vis_attention \
   --save_attention_weights
 ```
@@ -707,11 +709,11 @@ python deploy/go2_deploy/sim2sim_handstand.py --model go2_handstand.pt
 <details>
 <summary><b>G1 Walk</b></summary>
 
-See [deploy/g1_deploy/README.md](deploy/g1_deploy/README.md) for details.
+See [deploy/g1_deploy/README.md](deploy/g1_deploy/README.md) and [deploy/g1_deploy/g1_python/g1_python.md](deploy/g1_deploy/g1_python/g1_python.md) for details.
 
 ```bash
 pip install mujoco
-python deploy/g1_deploy/sim2sim_walk.py --model g1_flat_1.onnx --config g1_walk.yaml
+python deploy/g1_deploy/g1_python/sim2sim_walk.py --model g1_flat_1.onnx --config g1_walk.yaml
 ```
 
 </details>
@@ -746,11 +748,12 @@ python deploy/go2_deploy/sim2real_walk.py --mode real --model policy.pt
 <details>
 <summary><b>G1 Walk</b></summary>
 
-See [deploy/g1_deploy/README.md](deploy/g1_deploy/README.md) for details.
+See [deploy/g1_deploy/README.md](deploy/g1_deploy/README.md) and [deploy/g1_deploy/g1_python/g1_python.md](deploy/g1_deploy/g1_python/g1_python.md) for details.
 
 ```bash
 # Dependency: cyclonedds + unitree_sdk2_python (see README)
-python deploy/g1_deploy/sim2real_walk.py
+cd deploy/g1_deploy/g1_python
+python sim2real_walk.py
 ```
 
 </details>

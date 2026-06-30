@@ -10,7 +10,7 @@ Terminal 1: start the MuJoCo fake robot and SDK2 bridge.
 
 ```bash
 conda activate legged_rl_lab
-cd /home/wzh/legged_rl_lab/deploy/g1_deploy
+cd ~/legged_rl_lab/deploy/g1_deploy/g1_python
 python sim2sim_sdk2_bridge.py --config g1_walk.yaml --net lo --domain_id 1 --input gamepad --joystick_type switch --elastic_band
 ```
 
@@ -24,7 +24,7 @@ Terminal 2: start the deploy controller against the local DDS bridge.
 
 ```bash
 conda activate legged_rl_lab
-cd /home/wzh/legged_rl_lab/deploy/g1_deploy
+cd ~/legged_rl_lab/deploy/g1_deploy/g1_python
 python sim2real_walk.py --net lo --domain_id 1 --config_path config/g1_walk.yaml
 ```
 
@@ -92,7 +92,7 @@ Use `g1_walk.yaml` with `g1_flat_1.onnx`. The policy input is one 96-dimensional
 Gamepad:
 
 ```bash
-python deploy/g1_deploy/sim2sim_walk.py \
+python deploy/g1_deploy/g1_python/sim2sim_walk.py \
   --config g1_walk.yaml \
   --model g1_flat_1.onnx \
   --input gamepad
@@ -101,7 +101,7 @@ python deploy/g1_deploy/sim2sim_walk.py \
 Keyboard:
 
 ```bash
-python deploy/g1_deploy/sim2sim_walk.py \
+python deploy/g1_deploy/g1_python/sim2sim_walk.py \
   --config g1_walk.yaml \
   --model g1_flat_1.onnx \
   --input keyboard
@@ -140,7 +140,7 @@ Use `g1_amp.yaml` with `g1_walk.onnx` or `g1_run.onnx`. The policy input is 384-
 Check config, ONNX dimensions, and MuJoCo joint/actuator mapping:
 
 ```bash
-python deploy/g1_deploy/sim2sim_amp.py \
+python deploy/g1_deploy/g1_python/sim2sim_amp.py \
   --config g1_amp.yaml \
   --model g1_walk.onnx \
   --check
@@ -149,7 +149,7 @@ python deploy/g1_deploy/sim2sim_amp.py \
 Run the walk AMP policy:
 
 ```bash
-python deploy/g1_deploy/sim2sim_amp.py \
+python deploy/g1_deploy/g1_python/sim2sim_amp.py \
   --config g1_amp.yaml \
   --model g1_walk.onnx \
   --input gamepad
@@ -158,7 +158,7 @@ python deploy/g1_deploy/sim2sim_amp.py \
 Run the run AMP policy:
 
 ```bash
-python deploy/g1_deploy/sim2sim_amp.py \
+python deploy/g1_deploy/g1_python/sim2sim_amp.py \
   --config g1_amp.yaml \
   --model g1_run.onnx \
   --input gamepad
@@ -167,7 +167,7 @@ python deploy/g1_deploy/sim2sim_amp.py \
 Keyboard:
 
 ```bash
-python deploy/g1_deploy/sim2sim_amp.py \
+python deploy/g1_deploy/g1_python/sim2sim_amp.py \
   --config g1_amp.yaml \
   --model g1_walk.onnx \
   --input keyboard
@@ -176,7 +176,7 @@ python deploy/g1_deploy/sim2sim_amp.py \
 Gamepad axis debug:
 
 ```bash
-python deploy/g1_deploy/sim2sim_amp.py \
+python deploy/g1_deploy/g1_python/sim2sim_amp.py \
   --config g1_amp.yaml \
   --model g1_walk.onnx \
   --input gamepad \
@@ -214,7 +214,7 @@ Use `g1_mimic.yaml` with `g1_dance.onnx` or `g1_jump.onnx`. The tracking ONNX em
 Dance:
 
 ```bash
-python deploy/g1_deploy/sim2sim_mimic.py \
+python deploy/g1_deploy/g1_python/sim2sim_mimic.py \
   --config g1_mimic.yaml \
   --model g1_dance.onnx
 ```
@@ -222,7 +222,7 @@ python deploy/g1_deploy/sim2sim_mimic.py \
 Jump:
 
 ```bash
-python deploy/g1_deploy/sim2sim_mimic.py \
+python deploy/g1_deploy/g1_python/sim2sim_mimic.py \
   --config g1_mimic.yaml \
   --model g1_jump.onnx
 ```
@@ -230,7 +230,7 @@ python deploy/g1_deploy/sim2sim_mimic.py \
 Keyboard:
 
 ```bash
-python deploy/g1_deploy/sim2sim_mimic.py \
+python deploy/g1_deploy/g1_python/sim2sim_mimic.py \
   --config g1_mimic.yaml \
   --model g1_dance.onnx \
   --input keyboard
@@ -308,7 +308,7 @@ SDK2 is only the DDS communication layer. The deploy controller is still respons
 Terminal 1: start the MuJoCo fake robot and SDK2 bridge.
 
 ```bash
-cd deploy/g1_deploy
+cd deploy/g1_deploy/g1_python
 python sim2sim_sdk2_bridge.py --config g1_walk.yaml --net lo --domain_id 1 --input keyboard --elastic_band
 ```
 
@@ -321,7 +321,7 @@ python sim2sim_sdk2_bridge.py --config g1_walk.yaml --net lo --domain_id 1 --inp
 Terminal 2: start the deploy controller against the local DDS bridge.
 
 ```bash
-cd deploy/g1_deploy
+cd deploy/g1_deploy/g1_python
 python sim2real_walk.py --net lo --domain_id 1 --config_path config/g1_walk.yaml
 ```
 
@@ -368,8 +368,8 @@ python -m cmake --build . --target install -j"$(nproc)"
 
 # 3. Install the bundled unitree_sdk2_python.
 cd ../..
-cd unitree_sdk2_python
-export CYCLONEDDS_HOME=$(pwd)/../cyclonedds/install
+cd g1_python/unitree_sdk2_python
+export CYCLONEDDS_HOME=$(pwd)/../../cyclonedds/install
 pip install -e .
 
 # 4. If pip upgrades numpy to 2.x, restore IsaacLab-compatible versions.
@@ -415,6 +415,7 @@ ping 192.168.123.161
 Assume the Ethernet interface is `enp108s0`.
 
 ```bash
+cd deploy/g1_deploy/g1_python
 python sim2real_walk.py
 ```
 

@@ -18,7 +18,6 @@ from legged_rl_lab.assets.unitree import UNITREE_G1_29DOF_CFG
 from legged_rl_lab.tasks.parkour.attention.attention_env_cfg import (
     AttentionBaseEnvCfg,
     AttentionCommandsCfg,
-    AttentionCriticTerrainMapCfg,
     AttentionCurriculumCfg,
     AttentionEventCfg,
     AttentionEnvCfgMixin,
@@ -26,7 +25,6 @@ from legged_rl_lab.tasks.parkour.attention.attention_env_cfg import (
     AttentionPolicyCfg,
     AttentionRewardsCfg,
     AttentionSceneCfg,
-    AttentionTerrainMapCfg,
     AttentionTerminationsCfg,
     attention_height_scanner_cfg,
 )
@@ -44,7 +42,7 @@ import legged_rl_lab.tasks.parkour.attention.mdp as mdp
 # FINETUNE toggle — set True to switch to AME-style finetune (stake-heavy
 # terrain mix + stronger gait-shaping rewards + no randomization).
 # =============================================================================
-FINETUNE = True
+FINETUNE = False
 
 
 # =============================================================================
@@ -99,6 +97,15 @@ class G1AttentionSceneCfg(AttentionSceneCfg):
 
 @configclass
 class G1AttentionCriticCfg(ObsGroup):
+    """Critic proprio group — mirrors AME's CriticCfg.
+
+    Same six terms as the actor `AttentionPolicyCfg` (without per-term Unoise),
+    plus `base_lin_vel` as the single privileged signal. All hand-engineered
+    DR / contact / foot-state observations have been removed so the critic
+    matches the AME convention 1-to-1; the actor stays identical so the ONNX
+    export is unaffected.
+    """
+
     velocity_commands = ObsTerm(
         func=mdp.generated_commands,
         params={"command_name": "base_velocity"},
@@ -109,61 +116,16 @@ class G1AttentionCriticCfg(ObsGroup):
     joint_pos = ObsTerm(func=mdp.joint_pos_rel)
     joint_vel = ObsTerm(func=mdp.joint_vel_rel, scale=0.05)
     actions = ObsTerm(func=mdp.last_action, scale=0.1)
-    dr_friction = ObsTerm(func=mdp.scalar_rigid_friction_mean, params={"asset_cfg": SceneEntityCfg("robot")})
-    dr_mass_scale = ObsTerm(
-        func=mdp.body_mass_scale,
-        params={"asset_cfg": SceneEntityCfg("robot", body_names="torso_link")},
-    )
-    dr_com_b = ObsTerm(
-        func=mdp.body_com_pos_b,
-        params={"asset_cfg": SceneEntityCfg("robot", body_names="torso_link")},
-    )
-    dr_push_xy = ObsTerm(func=mdp.last_push_delta_xy)
-    dr_kp_scale = ObsTerm(
-        func=mdp.joint_stiffness_scale,
-        params={"asset_cfg": SceneEntityCfg("robot", joint_names=[".*"])},
-    )
-    dr_kd_scale = ObsTerm(
-        func=mdp.joint_damping_scale,
-        params={"asset_cfg": SceneEntityCfg("robot", joint_names=[".*"])},
-    )
     base_lin_vel = ObsTerm(func=mdp.base_lin_vel)
-    link_contact_states = ObsTerm(
-        func=mdp.links_contact_binary,
-        params={
-            "sensor_cfg": SceneEntityCfg("contact_forces", body_names=list(G1_CONTACT_LINKS)),
-            "threshold": 1.0,
-        },
+    # Must stay last — AttentionTerrainModel slices the flattened obs by
+    # treating the trailing `length*width*coord_dim` entries as the map scan.
+    terrain_map = ObsTerm(
+        func=mdp.elevation_map,
+        params={"sensor_cfg": SceneEntityCfg("height_scanner"), "noise": False},
     )
-    height_relative_to_feet = ObsTerm(
-        func=mdp.height_relative_to_feet,
-        params={
-            "sensor_names": list(G1_FOOT_SENSORS),
-            "asset_cfg": SceneEntityCfg("robot", body_names=list(G1_FOOT_BODIES)),
-            "clip": (-1.0, 1.0),
-        },
-    )
-    normal_vector_around_feet = ObsTerm(
-        func=mdp.normal_vector_around_feet,
-        params={"sensor_names": list(G1_FOOT_SENSORS)},
-    )
-    gait_phase = ObsTerm(func=mdp.gait_phase_sin_cos, params={"period": 0.8, "offset": [0.0, 0.5]})
-    feet_pos = ObsTerm(
-        func=mdp.feet_pos_body_frame,
-        params={"asset_cfg": SceneEntityCfg("robot", body_names=list(G1_FOOT_BODIES))},
-    )
-    feet_vel = ObsTerm(
-        func=mdp.feet_vel_body_frame,
-        params={"asset_cfg": SceneEntityCfg("robot", body_names=list(G1_FOOT_BODIES))},
-    )
-    feet_force = ObsTerm(
-        func=mdp.feet_contact_force,
-        params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*_ankle_roll_link")},
-    )
-    root_height = ObsTerm(func=mdp.base_pos_z)
 
     def __post_init__(self):
-        self.history_length = 5
+        self.history_length = 1
         self.enable_corruption = False
         self.concatenate_terms = True
 
@@ -172,8 +134,6 @@ class G1AttentionCriticCfg(ObsGroup):
 class G1AttentionObservationsCfg(AttentionObservationsCfg):
     policy: AttentionPolicyCfg = AttentionPolicyCfg()
     critic: G1AttentionCriticCfg = G1AttentionCriticCfg()
-    terrain_map: AttentionTerrainMapCfg = AttentionTerrainMapCfg()
-    critic_terrain_map: AttentionCriticTerrainMapCfg = AttentionCriticTerrainMapCfg()
 
 
 @configclass
@@ -394,6 +354,20 @@ class G1AttentionRewardsCfg(AttentionRewardsCfg):
             "asset_cfg": SceneEntityCfg("robot", joint_names=["waist.*"]),
         },
     )
+    # Pull ankles back to the default pose to discourage the heel-strike / toe-up
+    # gait that emerges when only `feet_slide` + `feet_air_time` constrain the
+    # ankle. Start at -0.3; raise to -0.5 if the policy still curls toes upward,
+    # lower to -0.15 if ankles become too stiff to clear stairs.
+    joint_deviation_ankle = RewTerm(
+        func=mdp.joint_deviation_l1,
+        weight=-0.3,
+        params={
+            "asset_cfg": SceneEntityCfg(
+                "robot",
+                joint_names=[".*_ankle_pitch_joint", ".*_ankle_roll_joint"],
+            ),
+        },
+    )
 
 
 @configclass
@@ -518,7 +492,7 @@ def configure_g1_attention_play_terrain(terrain_generator: Any) -> None:
     terrain_generator.num_rows = 1
     terrain_generator.num_cols = 1
     terrain_generator.curriculum = False
-    terrain_generator.difficulty_range = (0.6, 0.6)
+    terrain_generator.difficulty_range = (1.0, 1.0)
     terrain_generator.border_width = 3.0
 
     # ── Pick ONE terrain preset below ──────────────────────────────────────
@@ -561,12 +535,12 @@ def configure_g1_attention_play_terrain(terrain_generator: Any) -> None:
     # }
 
     # [E] Concentric gaps
-    # terrain_generator.sub_terrains = {
-    #     "concentric_gaps": HfConcentricGapTerrainCfg(
-    #         proportion=0.25, gap_width_range=(0.5, 0.5), ground_width_range=(0.5, 0.5),
-    #         ground_height_max=0.025, gap_depth=-2.0, platform_width=2.0, border_width=0.25,
-    #     ),
-    # }
+    terrain_generator.sub_terrains = {
+        "concentric_gaps": HfConcentricGapTerrainCfg(
+            proportion=0.25, gap_width_range=(0.5, 0.5), ground_width_range=(0.5, 0.5),
+            ground_height_max=0.025, gap_depth=-2.0, platform_width=2.0, border_width=0.25,
+        ),
+    }
 
     # [F] Stairs up
     # terrain_generator.sub_terrains = {
@@ -579,24 +553,24 @@ def configure_g1_attention_play_terrain(terrain_generator: Any) -> None:
     # [G] Stairs down
     # terrain_generator.sub_terrains = {
     #     "stairs_down": terrain_gen.MeshInvertedPyramidStairsTerrainCfg(
-    #         proportion=0.125, step_height_range=(0.10, 0.16), step_width=0.30,
+    #         proportion=0.125, step_height_range=(0.10, 0.25), step_width=0.30,
     #         platform_width=2.0, border_width=0.4, holes=False,
     #     ),
     # }
     # [H] Radial plank bridge — center platform with narrow planks radiating outward like spokes
-    terrain_generator.sub_terrains = {
-        "radial_plank_bridge": HfRadialPlankBridgeTerrainCfg(
-            proportion=1.0,
-            plank_width_range=(0.19, 0.19),
-            plank_height_max=0.03,
-            num_arms=4,
-            arm_length_range=None,
-            holes_depth=-2.0,
-            platform_width=1.0,
-            platform_shape="square",
-            border_width=0.25,
-        ),
-    }
+    # terrain_generator.sub_terrains = {
+    #     "radial_plank_bridge": HfRadialPlankBridgeTerrainCfg(
+    #         proportion=1.0,
+    #         plank_width_range=(0.19, 0.19),
+    #         plank_height_max=0.03,
+    #         num_arms=4,
+    #         arm_length_range=None,
+    #         holes_depth=-2.0,
+    #         platform_width=1.0,
+    #         platform_shape="square",
+    #         border_width=0.25,
+    #     ),
+    # }
 
 
 def configure_g1_attention_sensors(scene: Any, update_period: float) -> None:
@@ -628,16 +602,56 @@ class G1AttentionEnvCfg(AttentionEnvCfgMixin, AttentionBaseEnvCfg):
         configure_g1_attention_sensors(self.scene, self.decimation * self.sim.dt)
         self.configure_attention_train(G1_HEIGHT_SCANNER_PRIM_PATH)
 
+        # Two-stage curriculum, mirrors AME `velocity_env_cfg_29dof.py`:
+        #   * Backbone  (FINETUNE=False) — open command range, soft gait rewards,
+        #     domain randomization OFF + observation noise OFF.
+        #   * Finetune  (FINETUNE=True)  — locked forward heading, stronger
+        #     gait shaping + harder terrain, domain randomization ON + obs noise ON.
+        #
+        # NB. Default values declared on AttentionPolicyCfg / G1AttentionEventCfg
+        # already correspond to the FINETUNE setting (push/mass/COM enabled,
+        # Unoise enabled). _apply_backbone() strips those down; _apply_finetune()
+        # only tweaks reward weights and terrain mix.
         if FINETUNE:
             self._apply_finetune()
+        else:
+            self._apply_backbone()
+
+    def _apply_backbone(self) -> None:
+        """Backbone stage — disable domain randomization and observation noise.
+
+        Mirrors the ``FINETUNE=False`` branch of AME's velocity_env_cfg_29dof.
+        Use this stage to learn a robust velocity-tracking policy first; the
+        gait-shaping rewards stay at their declared default weights.
+        """
+        # ── Disable interval / startup randomization ────────────────────────
+        self.events.push_robot = None
+        self.events.add_base_mass = None
+        self.events.base_com = None
+
+        # ── Disable observation noise on every actor obs term ───────────────
+        policy_cfg = self.observations.policy
+        policy_cfg.enable_corruption = False
+        for term_name in ("base_ang_vel", "projected_gravity", "velocity_commands",
+                          "joint_pos", "joint_vel", "actions"):
+            term = getattr(policy_cfg, term_name, None)
+            if term is not None:
+                term.noise = None
+
+        # Terrain map now lives at the tail of the actor proprio group.
+        if hasattr(policy_cfg, "terrain_map"):
+            policy_cfg.terrain_map.params["noise"] = False
 
     def _apply_finetune(self) -> None:
         """Apply AME-style finetune overrides.
 
-        Three changes vs regular training:
-        1. Stronger gait-shaping reward weights
-        2. No domain randomization (push, mass, COM, obs noise)
-        3. Stake-heavy terrain mix
+        Mirrors the ``FINETUNE=True`` branch of AME's velocity_env_cfg_29dof:
+            1. Stronger gait-shaping reward weights
+            2. Stake-heavy terrain mix (set in configure_attention_train)
+            3. Lock forward heading + zero out spawn pose/velocity noise
+
+        Domain randomization (push/mass/COM) and obs noise stay **on**, matching
+        AME finetune. Use ``_apply_backbone()`` instead if you want them off.
         """
         # ── Reward weights ──────────────────────────
         self.rewards.tracking_lin_vel.weight = 2.0
@@ -653,18 +667,9 @@ class G1AttentionEnvCfg(AttentionEnvCfgMixin, AttentionBaseEnvCfg):
         self.rewards.joint_coordination.weight = -0.5
         self.rewards.joint_deviation_arms.weight = -0.3
         self.rewards.joint_deviation_waists.weight = -1.0
+        self.rewards.joint_deviation_ankle.weight = -0.5
 
-        # ── Disable domain randomization ────────────────────────────────────
-        self.events.push_robot = None
-        self.events.add_base_mass = None
-        self.events.base_com = None
-
-        # Disable observation noise
-        self.observations.policy.enable_corruption = False
-        self.observations.terrain_map.enable_corruption = False
-        self.observations.terrain_map.terrain_map.params["noise"] = False
-
-        # Fix reset position to terrain center
+        # Fix reset position to terrain center (AME finetune zeroes spawn noise)
         if hasattr(self.events, "reset_base") and self.events.reset_base is not None:
             self.events.reset_base.params = {
                 "pose_range": {"x": (0.0, 0.0), "y": (0.0, 0.0), "yaw": (0.0, 0.0)},

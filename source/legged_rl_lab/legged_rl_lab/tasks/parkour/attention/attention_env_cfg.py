@@ -28,9 +28,12 @@ import legged_rl_lab.tasks.parkour.attention.mdp as mdp
 ATTENTION_GRID_RESOLUTION = 0.05
 ATTENTION_GRID_SIZE = (1.6, 1.0)
 ATTENTION_MAP_SCAN_DIM = (33, 21, 3)
+# AME-style single ObsGroup per role: the height-scan tensor is appended to
+# the end of the actor / critic proprio group, and `AttentionTerrainModel`
+# carves it back out using ``obs[:, -map_scan_size:]``.
 ATTENTION_OBS_GROUPS = {
-    "actor": ["policy", "terrain_map"],
-    "critic": ["critic", "critic_terrain_map"],
+    "actor": ["policy"],
+    "critic": ["critic"],
 }
 
 
@@ -88,7 +91,7 @@ class AttentionCommandsCfg:
     base_velocity = mdp.UniformLevelVelocityCommandCfg(
         asset_name="robot",
         resampling_time_range=(10.0, 10.0),
-        rel_standing_envs=0.2,
+        rel_standing_envs=0.05,
         rel_heading_envs=1.0,
         heading_command=True,
         heading_control_stiffness=0.5,
@@ -240,15 +243,8 @@ class AttentionPolicyCfg(ObsGroup):
     joint_pos = ObsTerm(func=mdp.joint_pos_rel, noise=Unoise(n_min=-0.01, n_max=0.01))
     joint_vel = ObsTerm(func=mdp.joint_vel_rel, noise=Unoise(n_min=-0.5, n_max=0.5), scale=0.05)
     actions = ObsTerm(func=mdp.last_action, scale=0.1)
-
-    def __post_init__(self):
-        self.history_length = 1
-        self.enable_corruption = True
-        self.concatenate_terms = True
-
-
-@configclass
-class AttentionTerrainMapCfg(ObsGroup):
+    # Must stay last — AttentionTerrainModel splits the flattened obs by
+    # treating the trailing `length*width*coord_dim` entries as the map scan.
     terrain_map = ObsTerm(
         func=mdp.elevation_map,
         params={"sensor_cfg": SceneEntityCfg("height_scanner"), "noise": True},
@@ -261,23 +257,8 @@ class AttentionTerrainMapCfg(ObsGroup):
 
 
 @configclass
-class AttentionCriticTerrainMapCfg(ObsGroup):
-    terrain_map = ObsTerm(
-        func=mdp.elevation_map,
-        params={"sensor_cfg": SceneEntityCfg("height_scanner"), "noise": False},
-    )
-
-    def __post_init__(self):
-        self.history_length = 1
-        self.enable_corruption = False
-        self.concatenate_terms = True
-
-
-@configclass
 class AttentionObservationsCfg:
     policy: AttentionPolicyCfg = AttentionPolicyCfg()
-    terrain_map: AttentionTerrainMapCfg = AttentionTerrainMapCfg()
-    critic_terrain_map: AttentionCriticTerrainMapCfg = AttentionCriticTerrainMapCfg()
 
 
 @configclass
@@ -331,8 +312,7 @@ class AttentionEnvCfgMixin:
         self.commands.base_velocity.ranges.lin_vel_x = (0.0, 1.0)
 
         self.observations.policy.enable_corruption = False
-        self.observations.terrain_map.enable_corruption = False
-        self.observations.terrain_map.terrain_map.params["noise"] = False
+        self.observations.policy.terrain_map.params["noise"] = False
         self.scene.height_scanner.debug_vis = True
         self.scene.terrain.max_init_terrain_level = None
 

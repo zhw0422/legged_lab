@@ -1,0 +1,165 @@
+gamepad_type_sim2sim: "gamesir"
+policy_type: attention
+xml_path: "./assets/scene_terrain.xml"
+
+control_dt: 0.02
+sim_dt: 0.005
+control_decimation: 4
+
+policy_path: "exported_policy/g1_attention.onnx"
+history_length: 1
+
+# Isaac-order PD gains, regenerated from UNITREE_G1_29DOF_CFG (unitree.py:348-405).
+# Index legend (29-DoF G1, policy/Isaac order):
+#  [ 0,1] L/R hip_pitch        [ 2] waist_yaw
+#  [ 3,4] L/R hip_roll         [ 5] waist_roll
+#  [ 6,7] L/R hip_yaw          [ 8] waist_pitch
+#  [ 9,10] L/R knee            [11,12] L/R shoulder_pitch
+#  [13,14] L/R ankle_pitch     [15,16] L/R shoulder_roll
+#  [17,18] L/R ankle_roll      [19,20] L/R shoulder_yaw
+#  [21,22] L/R elbow           [23,24] L/R wrist_roll
+#  [25,26] L/R wrist_pitch     [27,28] L/R wrist_yaw
+kps: [100.0, 100.0, 200.0,
+      100.0, 100.0,  40.0,
+      100.0, 100.0,  40.0,
+      150.0, 150.0,  40.0,  40.0,
+       40.0,  40.0,  40.0,  40.0,
+       40.0,  40.0,  40.0,  40.0,
+       40.0,  40.0,
+       40.0,  40.0,  40.0,  40.0,
+       40.0,  40.0]
+
+# Note: ankle_pitch / ankle_roll kd = 2.0 in training (N5020-16 group,
+# ".*_ankle_.*": 2.0 in unitree.py). Values below already match.
+kds: [2.0, 2.0, 5.0,
+      2.0, 2.0, 5.0,
+      2.0, 2.0, 5.0,
+      4.0, 4.0, 1.0, 1.0,
+      2.0, 2.0, 1.0, 1.0,
+      2.0, 2.0, 1.0, 1.0,
+      1.0, 1.0,
+      1.0, 1.0, 1.0, 1.0,
+      1.0, 1.0]
+
+# ========== Joint ordering configuration (MuJoCo order) ==========
+joint_names_mujoco: [
+  'left_hip_pitch_joint', 'left_hip_roll_joint', 'left_hip_yaw_joint',
+  'left_knee_joint', 'left_ankle_pitch_joint', 'left_ankle_roll_joint',
+  'right_hip_pitch_joint', 'right_hip_roll_joint', 'right_hip_yaw_joint',
+  'right_knee_joint', 'right_ankle_pitch_joint', 'right_ankle_roll_joint',
+  'waist_yaw_joint', 'waist_roll_joint', 'waist_pitch_joint',
+  'left_shoulder_pitch_joint', 'left_shoulder_roll_joint', 'left_shoulder_yaw_joint',
+  'left_elbow_joint', 'left_wrist_roll_joint', 'left_wrist_pitch_joint', 'left_wrist_yaw_joint',
+  'right_shoulder_pitch_joint', 'right_shoulder_roll_joint', 'right_shoulder_yaw_joint',
+  'right_elbow_joint', 'right_wrist_roll_joint', 'right_wrist_pitch_joint', 'right_wrist_yaw_joint']
+
+actuator_names_mujoco: [
+  'left_hip_pitch', 'left_hip_roll', 'left_hip_yaw',
+  'left_knee', 'left_ankle_pitch', 'left_ankle_roll',
+  'right_hip_pitch', 'right_hip_roll', 'right_hip_yaw',
+  'right_knee', 'right_ankle_pitch', 'right_ankle_roll',
+  'waist_yaw', 'waist_roll', 'waist_pitch',
+  'left_shoulder_pitch', 'left_shoulder_roll', 'left_shoulder_yaw',
+  'left_elbow', 'left_wrist_roll', 'left_wrist_pitch', 'left_wrist_yaw',
+  'right_shoulder_pitch', 'right_shoulder_roll', 'right_shoulder_yaw',
+  'right_elbow', 'right_wrist_roll', 'right_wrist_pitch', 'right_wrist_yaw']
+
+mujoco_to_isaac_map: [0, 6, 12, 1, 7, 13, 2, 8, 14, 3, 9, 15, 22, 4, 10, 16, 23, 5, 11, 17, 24, 18, 25, 19, 26, 20, 27, 21, 28]
+isaac_to_mujoco_map: [0, 3, 6, 9, 13, 17, 1, 4, 7, 10, 14, 18, 2, 5, 8, 11, 15, 19, 21, 23, 25, 27, 12, 16, 20, 22, 24, 26, 28]
+
+# ========== Default standing joint angles (policy joint order) ==========
+default_joint_pos: [-0.1, -0.1,  0.0,
+                    0.0,  0.0,  0.0,
+                    0.0,  0.0,  0.0,
+                    0.3,  0.3,  0.3,   0.3,
+                   -0.2, -0.2,  0.25, -0.25,
+                    0.0,  0.0,  0.0,   0.0,
+                    0.97, 0.97, 0.15, -0.15,
+                    0.0,  0.0,  0.0,   0.0]
+
+num_actions: 29
+num_obs: 2175
+
+# ========== Observation scales ==========
+ang_vel_scale: 0.25
+dof_pos_scale: 1.0
+dof_vel_scale: 0.05
+last_action_scale: 0.1
+command_scale: [1.0, 1.0, 0.25]
+
+# ========== Terrain map scan ==========
+terrain_sensor_body: "torso_link"
+terrain_sensor_offset: [0.0, 0.0, 20.0]
+terrain_map_length: 33
+terrain_map_width: 21
+terrain_map_coord_dim: 3
+terrain_map_resolution: 0.05
+terrain_map_size: [1.6, 1.0]
+terrain_map_z_clip: [-1.2, 0.0]
+terrain_ordering: "xy"
+terrain_cutoff: 100.0
+terrain_flg_static: 1
+terrain_bodyexclude: -1
+
+# ========== Action scale ==========
+# Training (AttentionActionsCfg) uses a uniform scale=0.25 across ALL 29 joints.
+# Per-joint compression on arms/wrists (kept in g1_amp.yaml) is wrong here:
+# during stair climbing the policy relies on shoulder/elbow swinging to keep CoM
+# inside the support polygon, and clipping arm scale starves that recovery
+# behavior, causing forward face-plant after a few steps. Match training exactly.
+action_scale: [0.25, 0.25, 0.25,
+               0.25, 0.25, 0.25,
+               0.25, 0.25, 0.25,
+               0.25, 0.25, 0.25, 0.25,
+               0.25, 0.25, 0.25, 0.25,
+               0.25, 0.25, 0.25, 0.25,
+               0.25, 0.25,
+               0.25, 0.25, 0.25, 0.25,
+               0.25, 0.25]
+
+# Training has no action clip (JointPositionActionCfg.clip is None). The PD
+# inner loop already bounds joint torques via actuator effort limits, so we
+# remove the deploy-only clip that was choking saturated actions during
+# parkour transitions.
+# action_clip: 3.0   # disabled to match training
+init_height: 0.90
+
+# pygame GameSir axis mapping:
+gamepad_axis_left_x: 0
+gamepad_axis_left_y: 1
+gamepad_axis_right_x: 2
+gamepad_deadzone: 0.05
+gamepad_slew_rate: [2.0, 4.0, 3.0]
+
+# ========== Command velocity ranges ==========
+# Training (G1AttentionCommandsCfg in g1_attention_env_cfg.py:180-201):
+#   rel_standing_envs=0.0  -> policy never trained at vx=0, vyaw=0
+#   lin_vel_x=(0.0, 1.0), ang_vel_z=(-1.0, 1.0)
+# Giving vx=0 in deploy is out-of-distribution and triggers yaw drift +
+# single-side stepping. Clamp the low end to ~0.3 m/s so keyboard/gamepad
+# stays inside the trained command set.
+command_range:
+  lin_vel_x: [0.3, 1.0]
+  lin_vel_y: [0.0, 0.0]
+  ang_vel_z: [-1.0, 1.0]
+
+# ========== Sim2Real-compatible metadata ==========
+msg_type: "hg"
+imu_type: "pelvis"
+torso_idx: 12
+
+lowcmd_topic: "rt/lowcmd"
+lowstate_topic: "rt/lowstate"
+
+sdk2isaac_idx: [0, 6, 12, 1, 7, 13, 2, 8, 14, 3, 9, 15, 22, 4, 10, 16, 23, 5, 11, 17, 24, 18, 25, 19, 26, 20, 27, 21, 28]
+
+sdk_joint_order: [
+  'left_hip_pitch_joint', 'left_hip_roll_joint', 'left_hip_yaw_joint',
+  'left_knee_joint', 'left_ankle_pitch_joint', 'left_ankle_roll_joint',
+  'right_hip_pitch_joint', 'right_hip_roll_joint', 'right_hip_yaw_joint',
+  'right_knee_joint', 'right_ankle_pitch_joint', 'right_ankle_roll_joint',
+  'waist_yaw_joint', 'waist_roll_joint', 'waist_pitch_joint',
+  'left_shoulder_pitch_joint', 'left_shoulder_roll_joint', 'left_shoulder_yaw_joint',
+  'left_elbow_joint', 'left_wrist_roll_joint', 'left_wrist_pitch_joint', 'left_wrist_yaw_joint',
+  'right_shoulder_pitch_joint', 'right_shoulder_roll_joint', 'right_shoulder_yaw_joint',
+  'right_elbow_joint', 'right_wrist_roll_joint', 'right_wrist_pitch_joint', 'right_wrist_yaw_joint']

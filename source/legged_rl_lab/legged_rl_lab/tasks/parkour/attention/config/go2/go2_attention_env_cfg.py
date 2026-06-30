@@ -14,14 +14,12 @@ from isaaclab.utils import configclass
 from legged_rl_lab.assets.unitree import UNITREE_GO2_CFG
 from legged_rl_lab.tasks.parkour.attention.attention_env_cfg import (
     AttentionBaseEnvCfg,
-    AttentionCriticTerrainMapCfg,
     AttentionEventCfg,
     AttentionEnvCfgMixin,
     AttentionObservationsCfg,
     AttentionPolicyCfg,
     AttentionRewardsCfg,
     AttentionSceneCfg,
-    AttentionTerrainMapCfg,
     AttentionTerminationsCfg,
     attention_height_scanner_cfg,
 )
@@ -128,9 +126,15 @@ class Go2AttentionCriticCfg(ObsGroup):
         func=mdp.normal_vector_around_feet,
         params={"sensor_names": list(_GO2_FOOT_SENSORS)},
     )
+    # Must stay last — AttentionTerrainModel slices the flattened obs by
+    # treating the trailing `length*width*coord_dim` entries as the map scan.
+    terrain_map = ObsTerm(
+        func=mdp.elevation_map,
+        params={"sensor_cfg": SceneEntityCfg("height_scanner"), "noise": False},
+    )
 
     def __post_init__(self):
-        self.history_length = 5
+        self.history_length = 1
         self.enable_corruption = False
         self.concatenate_terms = True
 
@@ -139,8 +143,6 @@ class Go2AttentionCriticCfg(ObsGroup):
 class Go2AttentionObservationsCfg(AttentionObservationsCfg):
     policy: AttentionPolicyCfg = AttentionPolicyCfg()
     critic: Go2AttentionCriticCfg = Go2AttentionCriticCfg()
-    terrain_map: AttentionTerrainMapCfg = AttentionTerrainMapCfg()
-    critic_terrain_map: AttentionCriticTerrainMapCfg = AttentionCriticTerrainMapCfg()
 
 
 @configclass
