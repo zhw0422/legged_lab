@@ -177,18 +177,42 @@ void Sim2SimController::init_model(const std::string& model_name) {
 
   std::cout << "Loading ONNX policy: " << policy_path << "\n";
   policy_ = std::make_unique<OnnxPolicy>(policy_path.string());
+  configure_policy_state();
 
+  for (int i = 0; i < num_joints_; ++i) data_->qpos[qpos_addr_[i]] = default_qpos_mj_[i];
+  data_->qpos[2] = cfg_.init_height;
+  mj_forward(model_, data_);
+}
+
+void Sim2SimController::load_policy_config(const fs::path& config_path,
+                                           const std::string& model_name) {
+  cfg_ = load_config(config_path, g1_deploy_dir_);
+  fs::path policy_path = resolve_policy_path(g1_deploy_dir_, cfg_.policy_path, model_name);
+  std::cout << "\n[PolicySwitch] Loading " << config_path << " / " << policy_path.filename().string() << "\n";
+  policy_ = std::make_unique<OnnxPolicy>(policy_path.string());
+  policy_decimation_ = std::max(1, static_cast<int>(std::round(cfg_.control_dt / cfg_.sim_dt)));
+  model_->opt.timestep = cfg_.sim_dt;
+  configure_policy_state();
+}
+
+void Sim2SimController::configure_policy_state() {
   kp_mj_ = reorder(cfg_.kps, cfg_.isaac_to_mujoco_map);
   kd_mj_ = reorder(cfg_.kds, cfg_.isaac_to_mujoco_map);
   default_qpos_mj_ = reorder(cfg_.default_joint_pos, cfg_.isaac_to_mujoco_map);
   target_qpos_mj_ = default_qpos_mj_;
   last_action_.assign(num_joints_, 0.0f);
-
-  for (int i = 0; i < num_joints_; ++i) data_->qpos[qpos_addr_[i]] = default_qpos_mj_[i];
-  data_->qpos[2] = cfg_.init_height;
-  mj_forward(model_, data_);
+  time_step_ = 0;
+  ref_joint_pos_.clear();
+  ref_joint_vel_.clear();
+  ref_body_pos_w_.clear();
+  ref_body_quat_w_.clear();
+  obs_history_.clear();
 
   if (kind_ == PolicyKind::Walk || kind_ == PolicyKind::Amp) {
+    int frame_dim = 9 + 3 * num_joints_;
+    obs_history_.assign(static_cast<size_t>(std::max(1, cfg_.history_length)), std::vector<float>(frame_dim, 0.0f));
+  }
+  if (kind_ == PolicyKind::Mimic && cfg_.policy_type == "flat") {
     int frame_dim = 9 + 3 * num_joints_;
     obs_history_.assign(static_cast<size_t>(std::max(1, cfg_.history_length)), std::vector<float>(frame_dim, 0.0f));
   }
@@ -350,7 +374,13 @@ std::vector<float> Sim2SimController::build_attention_obs(const VelocityCommand&
 }
 
 std::vector<float> Sim2SimController::build_mimic_obs() {
-  if (cfg_.policy_type == "flat") return build_walk_like_obs({});
+  if (cfg_.policy_type == "flat") {
+    auto frame = build_walk_like_obs({});
+    obs_history_.pop_front();
+    obs_history_.push_back(frame);
+    std::vector<std::vector<float>> hist(obs_history_.begin(), obs_history_.end());
+    return stack_history_group_major(hist, num_joints_);
+  }
 
   auto q_mj = qpos_mujoco_order();
   auto dq_mj = qvel_mujoco_order();
@@ -455,12 +485,33 @@ void Sim2SimController::run(CommandController& input, const RunOptions& options)
 #endif
   MujocoWindow window(model_, data_, headless);
   int motiontime = 0;
+  int active_policy = 1;
   int render_decimation = std::max(1, static_cast<int>(std::round(0.02 / cfg_.sim_dt)));
   double start = wall_time();
   input.start();
 
   try {
     while (window.running() && !input.exit_requested()) {
+      if (kind_ == PolicyKind::Mimic) {
+        int requested = input.active_policy();
+        if (requested != 0 && requested != active_policy) {
+          if (requested == 1) {
+            load_policy_config(resolve_config_path(g1_deploy_dir_, "g1_walk.yaml"), "g1_flat_1.onnx");
+            active_policy = requested;
+          } else if (requested == 2) {
+            load_policy_config(resolve_config_path(g1_deploy_dir_, options.config_name), options.model_name);
+            active_policy = requested;
+          } else if (requested == 3) {
+            load_policy_config(resolve_config_path(g1_deploy_dir_, "g1_mimic.yaml"), "g1_jump.onnx");
+            active_policy = requested;
+          } else if (requested == 4) {
+            load_policy_config(resolve_config_path(g1_deploy_dir_, "g1_mimic.yaml"), "g1_dance.onnx");
+            active_policy = requested;
+          }
+          render_decimation = std::max(1, static_cast<int>(std::round(0.02 / cfg_.sim_dt)));
+        }
+      }
+
       std::fill(data_->xfrc_applied, data_->xfrc_applied + 6 * model_->nbody, 0.0);
       pd_control();
       mj_step(model_, data_);
@@ -559,11 +610,17 @@ int run_sim2sim_main(int argc, char** argv, PolicyKind kind, const char* default
   }
   fs::path g1_deploy_dir = fs::weakly_canonical(g1_cpp_dir / "..");
   fs::path config_path = resolve_config_path(g1_deploy_dir, options.config_name);
+  fs::path startup_config_path = config_path;
+  std::string startup_model_name = options.model_name;
+  if (kind == PolicyKind::Mimic) {
+    startup_config_path = resolve_config_path(g1_deploy_dir, "g1_walk.yaml");
+    startup_model_name = "g1_flat_1.onnx";
+  }
 
   try {
-    Config input_cfg = load_config(config_path, g1_deploy_dir);
+    Config input_cfg = load_config(startup_config_path, g1_deploy_dir);
     auto input = make_controller(input_cfg, options);
-    Sim2SimController controller(g1_deploy_dir, config_path, options.model_name, kind);
+    Sim2SimController controller(g1_deploy_dir, startup_config_path, startup_model_name, kind);
     controller.run(*input, options);
   } catch (const std::exception& e) {
     std::cerr << "[ERROR] " << e.what() << "\n";

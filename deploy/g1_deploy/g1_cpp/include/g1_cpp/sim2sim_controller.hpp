@@ -50,6 +50,9 @@ class Sim2SimController {
 
  private:
   void init_model(const std::string& model_name);
+  void load_policy_config(const std::filesystem::path& config_path,
+                          const std::string& model_name);
+  void configure_policy_state();
   void map_model_indices();
   void pd_control();
   void policy_step(CommandController& input);
