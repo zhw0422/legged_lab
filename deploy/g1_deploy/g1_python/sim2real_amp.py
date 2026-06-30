@@ -338,7 +338,7 @@ class AmpController:
 
         obs_batch = self.build_policy_input()[np.newaxis, :].astype(np.float32)
         raw_action = self.infer_policy(obs_batch)
-        self.action = np.clip(raw_action, -self.config.action_clip, self.config.action_clip)
+        self.action = raw_action.astype(np.float32)
         target_dof_pos = self.config.default_joint_pos + self.action * self.config.action_scale
 
         self.print_policy_debug(command, projected_gravity, ang_vel, joint_pos_rel, self.joint_vel, target_dof_pos, raw_action)

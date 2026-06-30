@@ -30,6 +30,7 @@ struct RunOptions {
   bool no_render = false;
   bool debug_policy = false;
   bool show_rays = false;
+  float debug_interval = 1.0f;
   float const_vx = 0.0f;
   float const_vy = 0.0f;
   float const_vyaw = 0.0f;
@@ -55,7 +56,10 @@ class Sim2SimController {
   void configure_policy_state();
   void map_model_indices();
   void pd_control();
-  void policy_step(CommandController& input);
+  void policy_step(CommandController& input, const RunOptions& options, double sim_time);
+  void print_policy_debug(double sim_time,
+                          const std::vector<float>& obs_input,
+                          const std::vector<float>& action) const;
   std::vector<float> build_walk_like_obs(const VelocityCommand& command);
   std::vector<float> build_attention_obs(const VelocityCommand& command);
   std::vector<float> build_mimic_obs();
@@ -76,6 +80,7 @@ class Sim2SimController {
   int anchor_body_id_ = -1;
   int anchor_body_idx_ = -1;
   int time_step_ = 0;
+  double last_debug_print_time_ = -1.0e30;
 
   std::vector<int> qpos_addr_;
   std::vector<int> qvel_addr_;

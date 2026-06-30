@@ -300,7 +300,7 @@ class Controller:
         obs_batch = obs_input[np.newaxis, :].astype(np.float32)
 
         raw_action = self.infer_policy(obs_batch)
-        self.action = np.clip(raw_action, -self.config.action_clip, self.config.action_clip)
+        self.action = raw_action.astype(np.float32)
 
         target_dof_pos = self.config.default_joint_pos + self.action * self.config.action_scale
         ramp = 1.0

@@ -158,9 +158,12 @@ def build_walk_obs(base_ang_vel_w, projected_gravity, commands, joint_pos_rel, j
 class MimicSim2SimController:
     """MuJoCo sim2sim controller for ONNX motion-tracking policies."""
 
-    def __init__(self, config_path, model_name):
+    def __init__(self, config_path, model_name, debug_policy=False, debug_interval=1.0):
         self._base_dir = str(G1_DEPLOY_DIR)
         self._active_policy_idx = 0
+        self.debug_policy = debug_policy
+        self.debug_interval = max(float(debug_interval), 1.0e-6)
+        self._last_debug_print_time = -np.inf
 
         # ---- Load config ----
         with open(config_path, 'r') as f:
@@ -300,6 +303,77 @@ class MimicSim2SimController:
         quat_wxyz = self.data.xquat[self.anchor_body_id].copy().astype(np.float32)
         return pos, quat_wxyz
 
+    def _joint_names_policy_order(self, cfg):
+        return [cfg.joint_names_mujoco[int(i)] for i in cfg.mujoco_to_isaac_map]
+
+    def _print_policy_debug(
+        self,
+        sim_time,
+        obs_input,
+        action,
+        target_isaac,
+        curr_qpos_isaac,
+        curr_qvel_isaac,
+        joint_pos_rel,
+        base_lin_vel_w,
+        base_ang_vel_w,
+        extra=None,
+    ):
+        cfg = self.config
+        names = self._joint_names_policy_order(cfg)
+        obs_input = np.asarray(obs_input, dtype=np.float32).reshape(-1)
+        action = np.asarray(action, dtype=np.float32).reshape(-1)
+        target_isaac = np.asarray(target_isaac, dtype=np.float32).reshape(-1)
+        target_err = target_isaac - curr_qpos_isaac
+
+        print("\n" + "=" * 120, flush=True)
+        print(
+            f"[MimicDebug/PY] sim_t={sim_time:.3f}s policy={self._policy_type} "
+            f"time_step={self.time_step} obs_dim={obs_input.size} expected={cfg.num_obs}",
+            flush=True,
+        )
+        print(
+            f"[root] xyz={np.array2string(self.data.qpos[:3], precision=4)} "
+            f"quat_wxyz={np.array2string(self.data.qpos[3:7], precision=4)} "
+            f"lin_w={np.array2string(base_lin_vel_w, precision=4)} "
+            f"ang={np.array2string(base_ang_vel_w, precision=4)}",
+            flush=True,
+        )
+        print(
+            f"[obs] min={obs_input.min():+.5f} max={obs_input.max():+.5f} "
+            f"mean={obs_input.mean():+.5f} l2={np.linalg.norm(obs_input):.5f} "
+            f"nan={np.isnan(obs_input).any()} inf={np.isinf(obs_input).any()}",
+            flush=True,
+        )
+        if extra:
+            for key, value in extra.items():
+                arr = np.asarray(value, dtype=np.float32).reshape(-1)
+                print(
+                    f"[obs:{key}] shape={arr.shape} min={arr.min():+.5f} max={arr.max():+.5f} "
+                    f"mean={arr.mean():+.5f} l2={np.linalg.norm(arr):.5f}",
+                    flush=True,
+                )
+        print(
+            f"[action] min={action.min():+.5f} max={action.max():+.5f} "
+            f"mean={action.mean():+.5f} l2={np.linalg.norm(action):.5f}",
+            flush=True,
+        )
+        print(
+            f"[qrel] min={joint_pos_rel.min():+.5f} max={joint_pos_rel.max():+.5f} "
+            f"mean={joint_pos_rel.mean():+.5f} l2={np.linalg.norm(joint_pos_rel):.5f}",
+            flush=True,
+        )
+        print("[Joint table in policy order]", flush=True)
+        print(" idx name                              q_abs    q_rel       qd   action   target      err", flush=True)
+        for i, name in enumerate(names):
+            print(
+                f"{i:>3d} {name:<30s} "
+                f"{curr_qpos_isaac[i]:+7.3f} {joint_pos_rel[i]:+8.3f} {curr_qvel_isaac[i]:+8.3f} "
+                f"{action[i]:+8.3f} {target_isaac[i]:+8.3f} {target_err[i]:+8.3f}",
+                flush=True,
+            )
+        print("=" * 120 + "\n", flush=True)
+
     # -------- Main loop --------
 
     def run(self, gamepad, policy_registry=None):
@@ -401,6 +475,9 @@ class MimicSim2SimController:
                             obs_arr[:, s:e].ravel() for s, e in feature_indices
                         ])
                         action = self.run_onnx_flat(obs_input)
+                        debug_extra = {
+                            "flat_frame": obs,
+                        }
 
                     else:
                         # ---- Tracking policy ----
@@ -433,6 +510,15 @@ class MimicSim2SimController:
                             self.last_action,
                             include_state_estimation=include_se,
                         )
+                        obs_input = obs
+                        debug_extra = {
+                            "ref_joint_pos": ref_joint_pos,
+                            "ref_joint_vel": ref_joint_vel,
+                            "anchor_pos_b": anchor_pos_b,
+                            "anchor_ori_b_6": anchor_ori_b_6,
+                            "base_lin_vel_b": base_lin_vel_b,
+                            "base_ang_vel_b": base_ang_vel_b,
+                        }
 
                         # Run ONNX policy
                         onnx_out = self.run_onnx(obs)
@@ -458,6 +544,22 @@ class MimicSim2SimController:
                     # Compute target joint positions (Isaac order -> MuJoCo order)
                     target_isaac = action * cfg.action_scale + cfg.default_joint_pos
                     self.target_qpos_mj = target_isaac[cfg.isaac_to_mujoco_map]
+
+                    policy_sim_t = motiontime * self.sim_dt
+                    if self.debug_policy and policy_sim_t - self._last_debug_print_time >= self.debug_interval:
+                        self._print_policy_debug(
+                            sim_time=policy_sim_t,
+                            obs_input=obs_input,
+                            action=action,
+                            target_isaac=target_isaac,
+                            curr_qpos_isaac=curr_qpos_isaac,
+                            curr_qvel_isaac=curr_qvel_isaac,
+                            joint_pos_rel=joint_pos_rel,
+                            base_lin_vel_w=base_lin_vel_w,
+                            base_ang_vel_w=base_ang_vel_w,
+                            extra=debug_extra,
+                        )
+                        self._last_debug_print_time = policy_sim_t
 
                 # ---- Camera follow ----
                 viewer.cam.lookat[:] = self.data.qpos[:3]
@@ -501,6 +603,8 @@ if __name__ == '__main__':
     parser.add_argument('--config', type=str, default='g1_mimic.yaml', help='Config YAML filename')
     parser.add_argument('--input', choices=['gamepad', 'keyboard'], default='gamepad',
                         help='Control input device.')
+    parser.add_argument('--debug_policy', action='store_true', help='Print policy obs/action/joint debug info.')
+    parser.add_argument('--debug_interval', type=float, default=1.0, help='Seconds between --debug_policy prints.')
     args = parser.parse_args()
 
     script_dir = str(G1_DEPLOY_DIR)
@@ -527,7 +631,12 @@ if __name__ == '__main__':
     }
 
     # 1. Initialize controller with flat policy (stable standing first)
-    controller = MimicSim2SimController(flat_config, 'g1_flat_1.onnx')
+    controller = MimicSim2SimController(
+        flat_config,
+        'g1_flat_1.onnx',
+        debug_policy=args.debug_policy,
+        debug_interval=args.debug_interval,
+    )
     controller._active_policy_idx = 1
 
     # 2. Initialize input device

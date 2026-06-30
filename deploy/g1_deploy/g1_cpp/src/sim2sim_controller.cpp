@@ -10,7 +10,9 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <iomanip>
 #include <iostream>
+#include <numeric>
 #include <stdexcept>
 #include <thread>
 
@@ -79,6 +81,43 @@ void append(std::vector<float>& dst, const std::vector<float>& src) {
 
 void append3(std::vector<float>& dst, const Vec3& src) {
   dst.insert(dst.end(), src.begin(), src.end());
+}
+
+struct VecStats {
+  float min = 0.0f;
+  float max = 0.0f;
+  float mean = 0.0f;
+  float l2 = 0.0f;
+};
+
+VecStats stats_of(const std::vector<float>& v) {
+  VecStats s;
+  if (v.empty()) return s;
+  auto [mn, mx] = std::minmax_element(v.begin(), v.end());
+  s.min = *mn;
+  s.max = *mx;
+  s.mean = std::accumulate(v.begin(), v.end(), 0.0f) / static_cast<float>(v.size());
+  float sq = 0.0f;
+  for (float x : v) sq += x * x;
+  s.l2 = std::sqrt(sq);
+  return s;
+}
+
+void print_stats(const std::string& name, const std::vector<float>& v) {
+  VecStats s = stats_of(v);
+  std::cout << "[" << name << "] shape=(" << v.size() << ")"
+            << " min=" << std::showpos << std::fixed << std::setprecision(5) << s.min
+            << " max=" << s.max
+            << " mean=" << s.mean
+            << " l2=" << std::noshowpos << s.l2 << "\n";
+}
+
+std::vector<float> slice_vec(const std::vector<float>& v, size_t begin, size_t end) {
+  if (begin >= v.size()) return {};
+  end = std::min(end, v.size());
+  if (begin >= end) return {};
+  return std::vector<float>(v.begin() + static_cast<std::ptrdiff_t>(begin),
+                            v.begin() + static_cast<std::ptrdiff_t>(end));
 }
 
 #ifdef G1_CPP_HAS_GLFW
@@ -426,9 +465,6 @@ std::vector<float> Sim2SimController::build_mimic_obs() {
 void Sim2SimController::apply_action(const std::vector<float>& raw_action) {
   std::vector<float> action = raw_action;
   action.resize(static_cast<size_t>(num_joints_), 0.0f);
-  if (cfg_.has_action_clip) {
-    for (float& v : action) v = std::clamp(v, -cfg_.action_clip, cfg_.action_clip);
-  }
   last_action_ = action;
   std::vector<float> target_isaac(num_joints_);
   for (int i = 0; i < num_joints_; ++i) {
@@ -437,7 +473,101 @@ void Sim2SimController::apply_action(const std::vector<float>& raw_action) {
   target_qpos_mj_ = reorder(target_isaac, cfg_.isaac_to_mujoco_map);
 }
 
-void Sim2SimController::policy_step(CommandController& input) {
+void Sim2SimController::print_policy_debug(double sim_time,
+                                           const std::vector<float>& obs_input,
+                                           const std::vector<float>& action) const {
+  auto q_mj = qpos_mujoco_order();
+  auto dq_mj = qvel_mujoco_order();
+  auto q_isaac = reorder(q_mj, cfg_.mujoco_to_isaac_map);
+  auto dq_isaac = reorder(dq_mj, cfg_.mujoco_to_isaac_map);
+  auto q_rel = subtract(q_isaac, cfg_.default_joint_pos);
+
+  std::vector<float> target_isaac(num_joints_, 0.0f);
+  for (int i = 0; i < num_joints_; ++i) {
+    float a = i < static_cast<int>(action.size()) ? action[static_cast<size_t>(i)] : 0.0f;
+    target_isaac[static_cast<size_t>(i)] =
+        a * cfg_.action_scale.at(static_cast<size_t>(i)) + cfg_.default_joint_pos.at(static_cast<size_t>(i));
+  }
+
+  std::vector<float> root_pos = {
+      static_cast<float>(data_->qpos[0]),
+      static_cast<float>(data_->qpos[1]),
+      static_cast<float>(data_->qpos[2]),
+  };
+  std::vector<float> root_quat = {
+      static_cast<float>(data_->qpos[3]),
+      static_cast<float>(data_->qpos[4]),
+      static_cast<float>(data_->qpos[5]),
+      static_cast<float>(data_->qpos[6]),
+  };
+  std::vector<float> base_lin = {
+      static_cast<float>(data_->qvel[0]),
+      static_cast<float>(data_->qvel[1]),
+      static_cast<float>(data_->qvel[2]),
+  };
+  std::vector<float> base_ang = {
+      static_cast<float>(data_->qvel[3]),
+      static_cast<float>(data_->qvel[4]),
+      static_cast<float>(data_->qvel[5]),
+  };
+
+  std::cout << "\n" << std::string(120, '=') << "\n";
+  std::cout << "[MimicDebug/CPP] sim_t=" << std::fixed << std::setprecision(3) << sim_time
+            << "s policy=" << cfg_.policy_type
+            << " time_step=" << time_step_
+            << " obs_dim=" << obs_input.size()
+            << " expected=" << cfg_.num_obs << "\n";
+  std::cout << "[root] xyz=[" << root_pos[0] << ", " << root_pos[1] << ", " << root_pos[2]
+            << "] quat_wxyz=[" << root_quat[0] << ", " << root_quat[1] << ", "
+            << root_quat[2] << ", " << root_quat[3] << "] lin_w=["
+            << base_lin[0] << ", " << base_lin[1] << ", " << base_lin[2] << "] ang=["
+            << base_ang[0] << ", " << base_ang[1] << ", " << base_ang[2] << "]\n";
+  print_stats("obs", obs_input);
+  print_stats("qrel", q_rel);
+  print_stats("qvel", dq_isaac);
+  print_stats("action", action);
+  if (kind_ == PolicyKind::Mimic && cfg_.policy_type == "tracking") {
+    print_stats("obs:ref_joint_pos", ref_joint_pos_);
+    print_stats("obs:ref_joint_vel", ref_joint_vel_);
+    if (cfg_.include_state_estimation) {
+      std::vector<float> anchor_pos = slice_vec(obs_input, 58, 61);
+      std::vector<float> anchor_ori = slice_vec(obs_input, 61, 67);
+      std::vector<float> base_lin_vel_b = slice_vec(obs_input, 67, 70);
+      std::vector<float> base_ang_vel_b = slice_vec(obs_input, 70, 73);
+      std::vector<float> joint_pos_rel_obs = slice_vec(obs_input, 73, 102);
+      std::vector<float> joint_vel_obs = slice_vec(obs_input, 102, 131);
+      std::vector<float> last_action_obs = slice_vec(obs_input, 131, 160);
+      print_stats("obs:anchor_pos_b", anchor_pos);
+      print_stats("obs:anchor_ori_b_6", anchor_ori);
+      print_stats("obs:base_lin_vel_b", base_lin_vel_b);
+      print_stats("obs:base_ang_vel_b", base_ang_vel_b);
+      print_stats("obs:joint_pos_rel", joint_pos_rel_obs);
+      print_stats("obs:joint_vel", joint_vel_obs);
+      print_stats("obs:last_action", last_action_obs);
+    }
+  }
+
+  std::cout << "[Joint table in policy order]\n";
+  std::cout << " idx name                              q_abs    q_rel       qd   action   target      err\n";
+  for (int i = 0; i < num_joints_; ++i) {
+    int mj_i = cfg_.mujoco_to_isaac_map.at(static_cast<size_t>(i));
+    const std::string& name = cfg_.joint_names_mujoco.at(static_cast<size_t>(mj_i));
+    float a = i < static_cast<int>(action.size()) ? action[static_cast<size_t>(i)] : 0.0f;
+    float err = target_isaac[static_cast<size_t>(i)] - q_isaac[static_cast<size_t>(i)];
+    std::cout << std::setw(3) << i << " " << std::left << std::setw(30) << name << std::right
+              << " " << std::showpos << std::fixed << std::setprecision(3)
+              << std::setw(7) << q_isaac[static_cast<size_t>(i)]
+              << " " << std::setw(8) << q_rel[static_cast<size_t>(i)]
+              << " " << std::setw(8) << dq_isaac[static_cast<size_t>(i)]
+              << " " << std::setw(8) << a
+              << " " << std::setw(8) << target_isaac[static_cast<size_t>(i)]
+              << " " << std::setw(8) << err
+              << std::noshowpos << "\n";
+  }
+  std::cout << std::string(120, '=') << "\n\n";
+}
+
+void Sim2SimController::policy_step(CommandController& input, const RunOptions& options, double sim_time) {
   VelocityCommand cmd = input.velocity();
   std::vector<float> obs_input;
   if (kind_ == PolicyKind::Attention) {
@@ -464,6 +594,10 @@ void Sim2SimController::policy_step(CommandController& input) {
     if (cfg_.motion_total_steps > 0 && time_step_ >= cfg_.motion_total_steps) time_step_ = 0;
   } else {
     action = policy_->run_single(obs_input);
+  }
+  if (options.debug_policy && sim_time - last_debug_print_time_ >= options.debug_interval) {
+    print_policy_debug(sim_time, obs_input, action);
+    last_debug_print_time_ = sim_time;
   }
   apply_action(action);
 }
@@ -518,7 +652,7 @@ void Sim2SimController::run(CommandController& input, const RunOptions& options)
       ++motiontime;
 
       if (motiontime % policy_decimation_ == 0) {
-        policy_step(input);
+        policy_step(input, options, motiontime * cfg_.sim_dt);
       }
 
       window.poll();
@@ -585,6 +719,7 @@ int run_sim2sim_main(int argc, char** argv, PolicyKind kind, const char* default
     else if (a == "--check") options.check = true;
     else if (a == "--no_render") options.no_render = true;
     else if (a == "--debug_policy") options.debug_policy = true;
+    else if (a == "--debug_interval") options.debug_interval = std::stof(need_value(a));
     else if (a == "--show_rays") options.show_rays = true;
     else if (a == "--const_vx") options.const_vx = std::stof(need_value(a));
     else if (a == "--const_vy") options.const_vy = std::stof(need_value(a));

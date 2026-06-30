@@ -22,15 +22,15 @@ class Config:
 
             self.control_dt = config["control_dt"]
 
-            self.msg_type = config["msg_type"]
-            self.imu_type = config["imu_type"]
+            self.msg_type = config.get("msg_type", "hg")
+            self.imu_type = config.get("imu_type", "pelvis")
 
             self.weak_motor = []
             if "weak_motor" in config:
                 self.weak_motor = config["weak_motor"]
 
-            self.lowcmd_topic = config["lowcmd_topic"]
-            self.lowstate_topic = config["lowstate_topic"]
+            self.lowcmd_topic = config.get("lowcmd_topic", "rt/lowcmd")
+            self.lowstate_topic = config.get("lowstate_topic", "rt/lowstate")
 
             policy_path = Path(config["policy_path"])
             self.policy_path = str(policy_path if policy_path.is_absolute() else base_dir / policy_path)
@@ -43,13 +43,13 @@ class Config:
             if "torso_idx" in config:
                 self.torso_idx = config["torso_idx"]
 
-            self.ang_vel_scale = config["ang_vel_scale"]
-            self.dof_pos_scale = config["dof_pos_scale"]
-            self.dof_vel_scale = config["dof_vel_scale"]
+            self.ang_vel_scale = config.get("ang_vel_scale", 1.0)
+            self.dof_pos_scale = config.get("dof_pos_scale", 1.0)
+            self.dof_vel_scale = config.get("dof_vel_scale", 1.0)
             self.action_scale = np.array(config["action_scale"], dtype=np.float32)
             self.action_clip = config.get("action_clip", 100.0)
             self.policy_ramp_time = config.get("policy_ramp_time", 0.0)
-            self.command_scale = np.array(config["command_scale"], dtype=np.float32)
+            self.command_scale = np.array(config.get("command_scale", [1.0, 1.0, 1.0]), dtype=np.float32)
             self.command_deadband = config.get("command_deadband", 0.0)
             self.command_smoothing_tau = config.get("command_smoothing_tau", 0.0)
             self.command_rate_limit = np.array(config.get("command_rate_limit", [100.0, 100.0, 100.0]), dtype=np.float32)
@@ -59,7 +59,14 @@ class Config:
             self.num_obs = config["num_obs"]
 
             self.history_length = config["history_length"]
-            self.command_range = config["command_range"]
+            self.command_range = config.get(
+                "command_range",
+                {
+                    "lin_vel_x": [-1.0, 1.0],
+                    "lin_vel_y": [-0.5, 0.5],
+                    "ang_vel_z": [-1.0, 1.0],
+                },
+            )
 
             self.policy_type = config.get("policy_type", "flat")
             self.include_state_estimation = config.get("include_state_estimation", False)
