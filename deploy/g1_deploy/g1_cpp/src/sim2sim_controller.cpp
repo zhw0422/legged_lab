@@ -129,6 +129,10 @@ class MujocoWindow {
     window_ = glfwCreateWindow(1280, 900, "G1 C++ MuJoCo Sim2Sim", nullptr, nullptr);
     if (!window_) throw std::runtime_error("Failed to create GLFW window.");
     glfwMakeContextCurrent(window_);
+    glfwSetWindowUserPointer(window_, this);
+    glfwSetCursorPosCallback(window_, &MujocoWindow::cursor_pos_callback);
+    glfwSetMouseButtonCallback(window_, &MujocoWindow::mouse_button_callback);
+    glfwSetScrollCallback(window_, &MujocoWindow::scroll_callback);
     glfwSwapInterval(0);
     mjv_defaultCamera(&cam_);
     mjv_defaultOption(&opt_);
@@ -168,10 +172,55 @@ class MujocoWindow {
   }
 
  private:
+  static void cursor_pos_callback(GLFWwindow* window, double xpos, double ypos) {
+    auto* self = static_cast<MujocoWindow*>(glfwGetWindowUserPointer(window));
+    if (!self) return;
+    self->handle_cursor(xpos, ypos);
+  }
+
+  static void mouse_button_callback(GLFWwindow* window, int button, int action, int) {
+    auto* self = static_cast<MujocoWindow*>(glfwGetWindowUserPointer(window));
+    if (!self) return;
+    self->handle_mouse_button(button, action);
+  }
+
+  static void scroll_callback(GLFWwindow* window, double, double yoffset) {
+    auto* self = static_cast<MujocoWindow*>(glfwGetWindowUserPointer(window));
+    if (!self) return;
+    self->zoom(-0.1 * yoffset);
+  }
+
+  void handle_mouse_button(int button, int action) {
+    if (button == GLFW_MOUSE_BUTTON_LEFT) left_down_ = action == GLFW_PRESS;
+    if (button == GLFW_MOUSE_BUTTON_RIGHT) right_down_ = action == GLFW_PRESS;
+    glfwGetCursorPos(window_, &last_x_, &last_y_);
+  }
+
+  void handle_cursor(double xpos, double ypos) {
+    double dx = xpos - last_x_;
+    double dy = ypos - last_y_;
+    last_x_ = xpos;
+    last_y_ = ypos;
+    if (left_down_) {
+      cam_.azimuth -= 0.25 * dx;
+      cam_.elevation = std::clamp(cam_.elevation - 0.25 * dy, -89.0, 89.0);
+    } else if (right_down_) {
+      zoom(0.01 * dy);
+    }
+  }
+
+  void zoom(double amount) {
+    cam_.distance = std::clamp(cam_.distance * (1.0 + amount), 0.5, 10.0);
+  }
+
   mjModel* model_;
   mjData* data_;
   bool disabled_;
   GLFWwindow* window_ = nullptr;
+  bool left_down_ = false;
+  bool right_down_ = false;
+  double last_x_ = 0.0;
+  double last_y_ = 0.0;
   mjvCamera cam_{};
   mjvOption opt_{};
   mjvScene scn_{};
@@ -693,7 +742,11 @@ std::unique_ptr<CommandController> make_controller(const Config& cfg, const RunO
     return std::make_unique<ConstantController>(cvx, cvy, cvyaw, options.const_warmup, 1.0f);
   }
   if (options.input == "gamepad") {
-    std::cout << "[input] Native C++ gamepad mapping is not implemented yet; using keyboard controls.\n";
+    return std::make_unique<GamepadController>(
+        cfg_range(cfg, "lin_vel_x", {-1.0f, 1.0f}),
+        cfg_range(cfg, "lin_vel_y", {-0.5f, 0.5f}),
+        cfg_range(cfg, "ang_vel_z", {-1.0f, 1.0f}),
+        options.joystick_type);
   }
   return std::make_unique<KeyboardController>(
       cfg_range(cfg, "lin_vel_x", {-1.0f, 1.0f}),
@@ -716,6 +769,7 @@ int run_sim2sim_main(int argc, char** argv, PolicyKind kind, const char* default
     if (a == "--config") options.config_name = need_value(a);
     else if (a == "--model") options.model_name = need_value(a);
     else if (a == "--input") options.input = need_value(a);
+    else if (a == "--joystick_type") options.joystick_type = need_value(a);
     else if (a == "--check") options.check = true;
     else if (a == "--no_render") options.no_render = true;
     else if (a == "--debug_policy") options.debug_policy = true;
@@ -726,7 +780,7 @@ int run_sim2sim_main(int argc, char** argv, PolicyKind kind, const char* default
     else if (a == "--const_vyaw") options.const_vyaw = std::stof(need_value(a));
     else if (a == "--const_warmup") options.const_warmup = std::stof(need_value(a));
     else if (a == "-h" || a == "--help") {
-      std::cout << "Usage: " << argv[0] << " [--config YAML] [--model ONNX] [--input keyboard|const|gamepad]\n"
+      std::cout << "Usage: " << argv[0] << " [--config YAML] [--model ONNX] [--input keyboard|const|gamepad] [--joystick_type switch|xbox]\n"
                 << "       [--check] [--no_render] [--const_vx V] [--const_vy V] [--const_vyaw W]\n";
       return 0;
     }

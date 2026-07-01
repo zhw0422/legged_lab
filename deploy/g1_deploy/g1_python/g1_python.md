@@ -24,10 +24,11 @@ cd build
 python -m cmake .. -DCMAKE_INSTALL_PREFIX=../install
 python -m cmake --build . --target install -j"$(nproc)"
 
-# unitree_sdk2_python
-cd ../../g1_python
-git clone https://github.com/zihanwang0422/unitree_sdk2_python.git
-cd unitree_sdk2_python
+# unitree_sdk2_python submodule
+cd ~/legged_rl_lab
+git submodule update --init --recursive deploy/g1_deploy/g1_python/unitree_sdk2_python
+
+cd deploy/g1_deploy/g1_python/unitree_sdk2_python
 export CYCLONEDDS_HOME=$(pwd)/../../cyclonedds/install
 pip install -e .
 
@@ -397,8 +398,10 @@ python -m cmake .. -DCMAKE_INSTALL_PREFIX=../install
 python -m cmake --build . --target install -j"$(nproc)"
 
 # 3. 安装本仓库内置的 unitree_sdk2_python。
-cd ../..
-cd g1_python/unitree_sdk2_python
+cd ~/legged_rl_lab
+git submodule update --init --recursive deploy/g1_deploy/g1_python/unitree_sdk2_python
+
+cd deploy/g1_deploy/g1_python/unitree_sdk2_python
 export CYCLONEDDS_HOME=$(pwd)/../../cyclonedds/install
 pip install -e .
 

@@ -26,6 +26,7 @@ struct RunOptions {
   std::string config_name;
   std::string model_name;
   std::string input = "keyboard";
+  std::string joystick_type = "switch";
   bool check = false;
   bool no_render = false;
   bool debug_policy = false;

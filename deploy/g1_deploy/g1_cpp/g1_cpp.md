@@ -10,6 +10,13 @@ Unitree G1 29 自由度策略 C++ 部署文档，包含基于 MuJoCo 的 Sim2Sim
 
 #### 1.1 unitree_sdk2 结构
 
+`unitree_sdk2` 作为 submodule 放在 `deploy/g1_deploy/g1_cpp/unitree_sdk2`。首次 clone 仓库后先初始化：
+
+```bash
+cd ~/legged_rl_lab
+git submodule update --init --recursive deploy/g1_deploy/g1_cpp/unitree_sdk2
+```
+
 SDK 主要目录：
 
 | 路径 | 作用 |
@@ -123,6 +130,7 @@ build/g1_cpp/sim2sim_sdk2_bridge \
   --net lo \
   --domain_id 1 \
   --input gamepad \
+  --joystick_type switch \
   --elastic_band
 ```
 
@@ -140,6 +148,8 @@ build/g1_cpp/sim2sim_sdk2_bridge \
 bridge 默认打开 MuJoCo viewer；无显示器或 SSH headless 环境下加 `--no_render`。启动后保持 MuJoCo viewer 打开。
 
 `--input gamepad` 会读取 Linux joystick 设备，默认依次尝试 `/dev/input/js0`、`/dev/input/js1`；需要指定其他设备时可设置 `G1_CPP_JOYSTICK=/dev/input/jsX`。手柄布局默认按 `--joystick_type switch`，Xbox 手柄使用 `--joystick_type xbox`。如果启动时提示没有找到 `/dev/input/js*`，先用 MuJoCo viewer 键盘或 bridge 终端键盘操作。
+
+MuJoCo viewer 相机会持续跟随机器人根位置；鼠标左键拖动旋转视角，鼠标右键上下拖动或滚轮缩放。
 
 #### 2.2 终端 2：启动 deploy controller
 
@@ -235,7 +245,8 @@ AMP / Mimic 时，把可执行文件、YAML 和模型替换为对应任务：
 build/g1_cpp/sim2sim_walk \
   --config g1_walk.yaml \
   --model g1_flat_1.onnx \
-  --input gamepad
+  --input gamepad \
+  --joystick_type switch
 ```
 
 SDK2 联调，终端 1：
@@ -246,6 +257,7 @@ build/g1_cpp/sim2sim_sdk2_bridge \
   --net lo \
   --domain_id 1 \
   --input gamepad \
+  --joystick_type switch \
   --elastic_band
 ```
 
@@ -267,7 +279,8 @@ build/g1_cpp/sim2real_walk \
 build/g1_cpp/sim2sim_amp \
   --config g1_amp.yaml \
   --model g1_walk.onnx \
-  --input gamepad
+  --input gamepad \
+  --joystick_type switch
 ```
 
 SDK2 联调，终端 1：
@@ -278,6 +291,7 @@ build/g1_cpp/sim2sim_sdk2_bridge \
   --net lo \
   --domain_id 1 \
   --input gamepad \
+  --joystick_type switch \
   --elastic_band
 ```
 
@@ -301,7 +315,8 @@ build/g1_cpp/sim2real_amp \
 build/g1_cpp/sim2sim_mimic \
   --config g1_mimic.yaml \
   --model g1_dance.onnx \
-  --input gamepad
+  --input gamepad \
+  --joystick_type switch
 ```
 
 SDK2 联调，终端 1：
@@ -312,6 +327,7 @@ build/g1_cpp/sim2sim_sdk2_bridge \
   --net lo \
   --domain_id 1 \
   --input gamepad \
+  --joystick_type switch \
   --elastic_band
 ```
 
@@ -335,7 +351,8 @@ build/g1_cpp/sim2real_mimic \
 build/g1_cpp/sim2sim_attention \
   --config g1_attention.yaml \
   --model g1_attention1.onnx \
-  --input gamepad
+  --input gamepad \
+  --joystick_type switch
 ```
 
 Attention 策略依赖地形高度图观测，当前 C++ SDK2 部署入口暂不提供真实机器人 height scan；先使用纯 Sim2Sim 验证。
@@ -348,7 +365,9 @@ build/g1_cpp/sim2sim_attention --check --no_render --input const --const_vx 0.3
 
 ### 4. 普通 Sim2Sim 手柄 / 键盘控制
 
-纯 Sim2Sim 目标输入是 `--input gamepad`。当前 C++ 代码里的原生 gamepad 映射还在对齐中，如果看到 `[input] Native C++ gamepad mapping is not implemented yet; using keyboard controls.`，则临时使用键盘控制：
+纯 Sim2Sim 的 `--input gamepad` 会读取 Linux joystick 设备，默认依次尝试 `/dev/input/js0`、`/dev/input/js1`；需要指定其他设备时可设置 `G1_CPP_JOYSTICK=/dev/input/jsX`。手柄布局默认按 `--joystick_type switch`，Xbox 手柄使用 `--joystick_type xbox`。没有手柄时使用 `--input keyboard`。
+
+普通 Sim2Sim 的 MuJoCo viewer 同样会跟随机器人根位置；鼠标左键拖动旋转视角，鼠标右键上下拖动或滚轮缩放。
 
 | Key | Action |
 | --- | --- |

@@ -405,6 +405,9 @@ class MujocoWindow {
     glfwMakeContextCurrent(window_);
     glfwSetWindowUserPointer(window_, this);
     glfwSetKeyCallback(window_, &MujocoWindow::key_callback);
+    glfwSetCursorPosCallback(window_, &MujocoWindow::cursor_pos_callback);
+    glfwSetMouseButtonCallback(window_, &MujocoWindow::mouse_button_callback);
+    glfwSetScrollCallback(window_, &MujocoWindow::scroll_callback);
     glfwSwapInterval(0);
     mjv_defaultCamera(&cam_);
     mjv_defaultOption(&opt_);
@@ -449,6 +452,24 @@ class MujocoWindow {
     auto* self = static_cast<MujocoWindow*>(glfwGetWindowUserPointer(window));
     if (!self) return;
     self->handle_key(key);
+  }
+
+  static void cursor_pos_callback(GLFWwindow* window, double xpos, double ypos) {
+    auto* self = static_cast<MujocoWindow*>(glfwGetWindowUserPointer(window));
+    if (!self) return;
+    self->handle_cursor(xpos, ypos);
+  }
+
+  static void mouse_button_callback(GLFWwindow* window, int button, int action, int) {
+    auto* self = static_cast<MujocoWindow*>(glfwGetWindowUserPointer(window));
+    if (!self) return;
+    self->handle_mouse_button(button, action);
+  }
+
+  static void scroll_callback(GLFWwindow* window, double, double yoffset) {
+    auto* self = static_cast<MujocoWindow*>(glfwGetWindowUserPointer(window));
+    if (!self) return;
+    self->zoom(-0.1 * yoffset);
   }
 
   void handle_key(int key) {
@@ -518,6 +539,29 @@ class MujocoWindow {
     }
   }
 
+  void handle_mouse_button(int button, int action) {
+    if (button == GLFW_MOUSE_BUTTON_LEFT) left_down_ = action == GLFW_PRESS;
+    if (button == GLFW_MOUSE_BUTTON_RIGHT) right_down_ = action == GLFW_PRESS;
+    glfwGetCursorPos(window_, &last_x_, &last_y_);
+  }
+
+  void handle_cursor(double xpos, double ypos) {
+    double dx = xpos - last_x_;
+    double dy = ypos - last_y_;
+    last_x_ = xpos;
+    last_y_ = ypos;
+    if (left_down_) {
+      cam_.azimuth -= 0.25 * dx;
+      cam_.elevation = std::clamp(cam_.elevation - 0.25 * dy, -89.0, 89.0);
+    } else if (right_down_) {
+      zoom(0.01 * dy);
+    }
+  }
+
+  void zoom(double amount) {
+    cam_.distance = std::clamp(cam_.distance * (1.0 + amount), 0.5, 10.0);
+  }
+
   mjModel* model_;
   mjData* data_;
   bool disabled_;
@@ -525,6 +569,10 @@ class MujocoWindow {
   bool* elastic_enabled_ = nullptr;
   double* elastic_length_ = nullptr;
   GLFWwindow* window_ = nullptr;
+  bool left_down_ = false;
+  bool right_down_ = false;
+  double last_x_ = 0.0;
+  double last_y_ = 0.0;
   mjvCamera cam_{};
   mjvOption opt_{};
   mjvScene scn_{};
